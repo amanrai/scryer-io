@@ -403,7 +403,7 @@ export function App() {
 							<article key={cell.id} className={`cell-card ${cell.id === selectedId ? "selected" : ""}`} onClick={() => setSelectedId(cell.id)}>
 								<div className="cell-header">
 									<button className="cell-toggle" type="button" aria-label="Toggle cell" aria-expanded={cell.cellOpen !== false} onClick={(event) => { event.stopPropagation(); setSelectedId(cell.id); patchCell(cell.id, { cellOpen: cell.cellOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.cellOpen !== false ? "open" : ""} /></button>
-									<div className="cell-heading" onClick={(event) => event.stopPropagation()}><div className="cell-title-row"><span>{index + 1}.</span><input className="cell-title-input" value={cell.title || "Untitled"} onChange={(event) => patchCell(cell.id, { title: event.target.value || "Untitled" })} /></div><div className="cell-subtitle">{cell.kind} cell{cell.lastRun ? ` · last run ${cell.lastRun}` : ""}</div></div>
+									<div className="cell-heading" onClick={(event) => event.stopPropagation()}><div className="cell-title-row"><span>{index + 1}.</span><input className="cell-title-input" value={cell.title || "Untitled"} onChange={(event) => patchCell(cell.id, { title: event.target.value || "Untitled" })} /></div></div>
 									<select value={cell.kind} onClick={(event) => event.stopPropagation()} onChange={(event) => patchCell(cell.id, { kind: event.target.value as CellKind })} aria-label="Cell type"><option value="code">Code</option><option value="markdown">Markdown</option></select>
 								</div>
 								<div className={`cell-body ${cell.cellOpen !== false ? "open" : ""}`}><div>
