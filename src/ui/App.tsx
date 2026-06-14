@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import DOMPurify from "dompurify";
+import { marked } from "marked";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
 	faArrowDown,
@@ -87,19 +89,8 @@ function isCommand(event: KeyboardEvent, code: string): boolean {
 	return event.code === code && (event.metaKey || event.ctrlKey);
 }
 
-function escapeHtml(text: string): string {
-	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 function renderMarkdown(md: string): string {
-	return escapeHtml(md)
-		.replace(/^### (.*)$/gm, "<h3>$1</h3>")
-		.replace(/^## (.*)$/gm, "<h2>$1</h2>")
-		.replace(/^# (.*)$/gm, "<h1>$1</h1>")
-		.replace(/`([^`]+)`/g, "<code>$1</code>")
-		.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-		.replace(/^[-*] (.*)$/gm, "<div class=\"md-bullet\">• $1</div>")
-		.replace(/\n/g, "<br />");
+	return DOMPurify.sanitize(marked.parse(md, { async: false }) as string);
 }
 
 function plainTextData(value: unknown): string {
