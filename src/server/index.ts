@@ -1,6 +1,7 @@
 import express from "express";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { JupyterRuntime } from "../jupyter-runtime.js";
 import type { CellOutput, JupyterProviderProfile, RuntimeSession } from "../types.js";
 
@@ -11,6 +12,7 @@ const PROVIDERS_PATH = join(DATA_DIR, "providers.json");
 const NOTEBOOK_PATH = join(DATA_DIR, "notebook.ipynb");
 
 const app = express();
+let currentNotebookPath = NOTEBOOK_PATH;
 const providers = new Map<string, JupyterProviderProfile>();
 const runtimes = new Map<string, JupyterRuntime>();
 let activeSession: RuntimeSession | undefined;
@@ -55,8 +57,15 @@ function emptyNotebook() {
 	return { nbformat: 4, nbformat_minor: 5, metadata: { scryer: { app: "scryer-io", version: 1 } }, cells: [] };
 }
 
+function resolveNotebookPath(rawPath: string) {
+	const expanded = rawPath.startsWith("~/") ? join(homedir(), rawPath.slice(2)) : rawPath;
+	const path = isAbsolute(expanded) ? expanded : resolve(process.cwd(), expanded);
+	if (extname(path) !== ".ipynb") throw new Error("Notebook path must end in .ipynb");
+	return path;
+}
+
 async function readNotebook() {
-	const notebook = await readJson<any>(NOTEBOOK_PATH);
+	const notebook = await readJson<any>(currentNotebookPath);
 	return notebook?.nbformat === 4 ? notebook : emptyNotebook();
 }
 function outputText(outputs: CellOutput[]): string {
@@ -84,12 +93,39 @@ app.get("/api/healthz", (_req, res) => {
 });
 
 app.get("/api/notebook", async (_req, res) => {
-	res.json(await readNotebook());
+	const notebook = await readNotebook();
+	res.json({ ...notebook, metadata: { ...notebook.metadata, scryer: { ...notebook.metadata?.scryer, path: currentNotebookPath } } });
 });
 
 app.put("/api/notebook", async (req, res) => {
-	await writeJson(NOTEBOOK_PATH, req.body?.nbformat === 4 ? req.body : emptyNotebook());
-	res.json({ ok: true });
+	await writeJson(currentNotebookPath, req.body?.nbformat === 4 ? req.body : emptyNotebook());
+	res.json({ ok: true, path: currentNotebookPath });
+});
+
+app.post("/api/notebook/open", async (req, res) => {
+	try {
+		currentNotebookPath = resolveNotebookPath(String(req.body?.path ?? ""));
+		const notebook = await readNotebook();
+		res.json({ ...notebook, metadata: { ...notebook.metadata, scryer: { ...notebook.metadata?.scryer, path: currentNotebookPath } } });
+	} catch (err: any) {
+		res.status(400).json({ error: err?.message ?? String(err) });
+	}
+});
+
+app.post("/api/notebook/new", async (req, res) => {
+	try {
+		currentNotebookPath = resolveNotebookPath(String(req.body?.path ?? ""));
+		const notebook = emptyNotebook();
+		await writeJson(currentNotebookPath, notebook);
+		res.status(201).json(notebook);
+	} catch (err: any) {
+		res.status(400).json({ error: err?.message ?? String(err) });
+	}
+});
+
+app.post("/api/notebook/close", async (_req, res) => {
+	currentNotebookPath = NOTEBOOK_PATH;
+	res.json(emptyNotebook());
 });
 
 app.get("/api/runtime/providers", (_req, res) => {

@@ -77,6 +77,9 @@ function outputFromMessage(msg: KernelMessage.IIOPubMessage): CellOutput | undef
 	if (KernelMessage.isStatusMsg(msg)) {
 		return { kind: "status", executionState: msg.content.execution_state };
 	}
+	if (msg.header.msg_type === "execute_input") {
+		return undefined;
+	}
 	return { kind: "unknown", messageType: msg.header.msg_type, content: msg.content };
 }
 

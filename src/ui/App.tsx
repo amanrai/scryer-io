@@ -10,7 +10,9 @@ import {
 	faCircleNodes,
 	faClone,
 	faEraser,
+	faFile,
 	faFloppyDisk,
+	faFolderOpen,
 	faGear,
 	faPlay,
 	faPlus,
@@ -257,11 +259,13 @@ export function App() {
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>("provider");
 	const [themeName, setThemeName] = useState<ThemeName>(() => (localStorage.getItem("scryer-io:theme") as ThemeName) || "dark");
 	const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty">("saved");
+	const [notebookPath, setNotebookPath] = useState("notebook.ipynb");
 	const [dirtyCellIds, setDirtyCellIds] = useState<Set<string>>(new Set());
 	const cellRefs = useRef(new Map<string, HTMLElement>());
 	const editorRefs = useRef(new Map<string, HTMLTextAreaElement>());
 	const selectedIndex = cells.findIndex((cell) => cell.id === selectedId);
 	const selectedCell = cells[selectedIndex] ?? cells[0];
+	const notebookName = (notebookPath.split(/[\\/]/).pop() ?? "notebook.ipynb").replace(/\.ipynb$/i, "") || "Untitled";
 
 	useEffect(() => {
 		localStorage.setItem("scryer-io:theme", themeName);
@@ -286,6 +290,7 @@ export function App() {
 				setCells(loadedCells);
 				setSelectedId(loadedCells[0].id);
 				setDirtyCellIds(new Set());
+				setNotebookPath(json.metadata?.scryer?.path ?? "notebook.ipynb");
 				setSaveState("saved");
 			}
 		}).catch(() => undefined);
@@ -321,6 +326,45 @@ export function App() {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(notebookFromCells(cells)),
 		});
+		setDirtyCellIds(new Set());
+		setSaveState("saved");
+	}
+
+	async function openNotebook() {
+		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes and open another notebook?")) return;
+		const path = window.prompt("Open .ipynb path");
+		if (!path) return;
+		const res = await fetch("/api/notebook/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
+		const json = await res.json();
+		if (!res.ok) return window.alert(json.error ?? "Failed to open notebook");
+		const loadedCells = cellsFromNotebook(json);
+		setNotebookPath(json.metadata?.scryer?.path ?? path);
+		setCells(loadedCells.length ? loadedCells : initialCells);
+		setSelectedId((loadedCells[0] ?? initialCells[0]).id);
+		setDirtyCellIds(new Set());
+		setSaveState("saved");
+	}
+
+	async function newNotebook() {
+		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes and create a new notebook?")) return;
+		const path = window.prompt("New .ipynb path");
+		if (!path) return;
+		const res = await fetch("/api/notebook/new", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
+		const json = await res.json();
+		if (!res.ok) return window.alert(json.error ?? "Failed to create notebook");
+		setNotebookPath(json.metadata?.scryer?.path ?? path);
+		setCells(initialCells);
+		setSelectedId(initialCells[0].id);
+		setDirtyCellIds(new Set(initialCells.map((cell) => cell.id)));
+		setSaveState("dirty");
+	}
+
+	async function closeNotebook() {
+		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes and close this notebook?")) return;
+		await fetch("/api/notebook/close", { method: "POST" });
+		setNotebookPath("notebook.ipynb");
+		setCells(initialCells);
+		setSelectedId(initialCells[0].id);
 		setDirtyCellIds(new Set());
 		setSaveState("saved");
 	}
@@ -514,24 +558,27 @@ export function App() {
 	return (
 		<div className="app-shell" data-theme={themeName}>
 			<header className="topbar">
-				<div className="brand-block"><div className="eyebrow">Scryer Io</div><h1>Notebook workbench</h1></div>
+				<div className="brand-block"><div className="eyebrow">Scryer Io</div><h1 title={notebookPath}>{notebookName}</h1></div>
 				<div className="provider-pill"><FontAwesomeIcon icon={faCircleNodes} /><span>API {apiStatus}</span><strong>{providerId ? `Jupyter ${providerId}` : "Jupyter disconnected"}</strong></div>
 			</header>
 
 			<section className="toolbar" aria-label="Notebook actions">
+				<button className="ghost-button icon-button" title="New notebook" aria-label="New notebook" onClick={newNotebook} disabled={isExecuting}><FontAwesomeIcon icon={faFile} /></button>
+				<button className="ghost-button icon-button" title="Open notebook" aria-label="Open notebook" onClick={openNotebook} disabled={isExecuting}><FontAwesomeIcon icon={faFolderOpen} /></button>
+				<button className="ghost-button icon-button" title="Save notebook" aria-label="Save notebook" onClick={saveNotebook} disabled={saveState === "saving"}><FontAwesomeIcon icon={faFloppyDisk} /></button>
+				<button className="ghost-button icon-button" title="Close notebook" aria-label="Close notebook" onClick={closeNotebook} disabled={isExecuting}><FontAwesomeIcon icon={faXmark} /></button>
+				<div className="toolbar-divider" />
+				<button className="ghost-button icon-button" title="Restart kernel" aria-label="Restart kernel" onClick={restartKernel} disabled={isExecuting || !activeSession}><FontAwesomeIcon icon={faRotateRight} /></button>
+				<button className="ghost-button icon-button" title="Execute all up to here" aria-label="Execute all up to here" onClick={() => executeCells(cells.slice(0, selectedIndex + 1))} disabled={isExecuting}><FontAwesomeIcon icon={faBolt} /></button>
+				<button className="ghost-button icon-button" title="Execute all from here" aria-label="Execute all from here" onClick={() => executeCells(cells.slice(selectedIndex))} disabled={isExecuting}><FontAwesomeIcon icon={faRotateRight} /></button>
+				<button className="ghost-button icon-button" title="Clear outputs" aria-label="Clear outputs" onClick={clearOutputs} disabled={isExecuting}><FontAwesomeIcon icon={faEraser} /></button>
+				<div className="toolbar-divider" />
 				<button className="ghost-button icon-button" title="Move cell up" aria-label="Move cell up" onClick={() => moveSelected(-1)} disabled={selectedIndex <= 0 || isExecuting}><FontAwesomeIcon icon={faArrowUp} /></button>
 				<button className="ghost-button icon-button" title="Move cell down" aria-label="Move cell down" onClick={() => moveSelected(1)} disabled={selectedIndex < 0 || selectedIndex >= cells.length - 1 || isExecuting}><FontAwesomeIcon icon={faArrowDown} /></button>
 				<button className="ghost-button icon-button" title="Duplicate cell" aria-label="Duplicate cell" onClick={duplicateSelected} disabled={isExecuting}><FontAwesomeIcon icon={faClone} /></button>
 				<button className="ghost-button icon-button" title="Delete cell" aria-label="Delete cell" onClick={deleteSelected} disabled={isExecuting || cells.length <= 1}><FontAwesomeIcon icon={faTrash} /></button>
-				<div className="toolbar-divider" />
 				<button className="primary-button icon-button" title="Execute cell" aria-label="Execute cell" onClick={() => selectedCell && executeCells([selectedCell])} disabled={isExecuting}><FontAwesomeIcon icon={faPlay} /></button>
-				<button className="ghost-button icon-button" title="Execute all up to here" aria-label="Execute all up to here" onClick={() => executeCells(cells.slice(0, selectedIndex + 1))} disabled={isExecuting}><FontAwesomeIcon icon={faBolt} /></button>
-				<button className="ghost-button icon-button" title="Execute all from here" aria-label="Execute all from here" onClick={() => executeCells(cells.slice(selectedIndex))} disabled={isExecuting}><FontAwesomeIcon icon={faRotateRight} /></button>
 				<button className="ghost-button icon-button" title="Interrupt kernel" aria-label="Interrupt kernel" onClick={interruptKernel} disabled={!activeSession}><FontAwesomeIcon icon={faStop} /></button>
-				<div className="toolbar-divider" />
-				<button className="ghost-button icon-button" title="Restart kernel" aria-label="Restart kernel" onClick={restartKernel} disabled={isExecuting || !activeSession}><FontAwesomeIcon icon={faRotateRight} /></button>
-				<button className="ghost-button icon-button" title="Clear outputs" aria-label="Clear outputs" onClick={clearOutputs} disabled={isExecuting}><FontAwesomeIcon icon={faEraser} /></button>
-				<button className="ghost-button icon-button" title="Save notebook" aria-label="Save notebook" onClick={saveNotebook} disabled={saveState === "saving"}><FontAwesomeIcon icon={faFloppyDisk} /></button>
 				<div className="toolbar-spacer" />
 				<button className="ghost-button icon-button" title="Settings" aria-label="Settings" onClick={() => setSettingsOpen(true)}><FontAwesomeIcon icon={faGear} /></button>
 				<button className="success-button icon-button" title="Add cell below" aria-label="Add cell below" onClick={() => addCell("below")}><FontAwesomeIcon icon={faPlus} /></button>
