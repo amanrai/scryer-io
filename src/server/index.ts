@@ -6,14 +6,16 @@ import type { CellOutput, JupyterProviderProfile, RuntimeSession } from "../type
 
 const DEFAULT_API_PORT = 54322;
 const port = Number(process.env.SCRYER_IO_API_PORT ?? DEFAULT_API_PORT);
-const PROVIDERS_PATH = join(process.cwd(), "data", "providers.json");
+const DATA_DIR = join(process.cwd(), "data");
+const PROVIDERS_PATH = join(DATA_DIR, "providers.json");
+const NOTEBOOK_PATH = join(DATA_DIR, "notebook.json");
 
 const app = express();
 const providers = new Map<string, JupyterProviderProfile>();
 const runtimes = new Map<string, JupyterRuntime>();
 let activeSession: RuntimeSession | undefined;
 
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 function publicProvider(profile: JupyterProviderProfile) {
 	return {
@@ -27,21 +29,26 @@ function publicProvider(profile: JupyterProviderProfile) {
 	};
 }
 
+async function readJson<T>(path: string): Promise<T | undefined> {
+	try { return JSON.parse(await readFile(path, "utf8")) as T; }
+	catch { return undefined; }
+}
+
+async function writeJson(path: string, value: unknown) {
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, JSON.stringify(value, null, 2));
+}
+
 async function loadProviders() {
-	try {
-		const raw = JSON.parse(await readFile(PROVIDERS_PATH, "utf8")) as { providers?: JupyterProviderProfile[] };
-		for (const profile of raw.providers ?? []) {
-			providers.set(profile.id, profile);
-			runtimes.set(profile.id, new JupyterRuntime(profile));
-		}
-	} catch {
-		// First run: no provider file yet.
+	const raw = await readJson<{ providers?: JupyterProviderProfile[] }>(PROVIDERS_PATH);
+	for (const profile of raw?.providers ?? []) {
+		providers.set(profile.id, profile);
+		runtimes.set(profile.id, new JupyterRuntime(profile));
 	}
 }
 
 async function saveProviders() {
-	await mkdir(dirname(PROVIDERS_PATH), { recursive: true });
-	await writeFile(PROVIDERS_PATH, JSON.stringify({ providers: [...providers.values()] }, null, 2));
+	await writeJson(PROVIDERS_PATH, { providers: [...providers.values()] });
 }
 
 function outputText(outputs: CellOutput[]): string {
@@ -66,6 +73,15 @@ function getRuntime(providerId: string): JupyterRuntime {
 
 app.get("/api/healthz", (_req, res) => {
 	res.json({ ok: true, service: "scryer-io-api", port });
+});
+
+app.get("/api/notebook", async (_req, res) => {
+	res.json(await readJson(NOTEBOOK_PATH) ?? { cells: [] });
+});
+
+app.put("/api/notebook", async (req, res) => {
+	await writeJson(NOTEBOOK_PATH, req.body ?? { cells: [] });
+	res.json({ ok: true });
 });
 
 app.get("/api/runtime/providers", (_req, res) => {
@@ -97,20 +113,27 @@ app.post("/api/runtime/providers", async (req, res) => {
 	}
 });
 
-app.get("/api/runtime/providers/:providerId/kernelspecs", async (req, res) => {
+app.delete("/api/runtime/providers/:providerId", async (req, res) => {
 	try {
-		res.json({ kernelSpecs: await getRuntime(req.params.providerId).getKernelSpecs() });
+		const providerId = req.params.providerId;
+		providers.delete(providerId);
+		runtimes.delete(providerId);
+		if (activeSession?.providerId === providerId) activeSession = undefined;
+		await saveProviders();
+		res.json({ ok: true });
 	} catch (err: any) {
 		res.status(500).json({ error: err?.message ?? String(err) });
 	}
 });
 
+app.get("/api/runtime/providers/:providerId/kernelspecs", async (req, res) => {
+	try { res.json({ kernelSpecs: await getRuntime(req.params.providerId).getKernelSpecs() }); }
+	catch (err: any) { res.status(500).json({ error: err?.message ?? String(err) }); }
+});
+
 app.get("/api/runtime/providers/:providerId/sessions", async (req, res) => {
-	try {
-		res.json({ sessions: await getRuntime(req.params.providerId).listSessions() });
-	} catch (err: any) {
-		res.status(500).json({ error: err?.message ?? String(err) });
-	}
+	try { res.json({ sessions: await getRuntime(req.params.providerId).listSessions() }); }
+	catch (err: any) { res.status(500).json({ error: err?.message ?? String(err) }); }
 });
 
 app.post("/api/runtime/providers/:providerId/sessions", async (req, res) => {
@@ -135,6 +158,18 @@ app.post("/api/runtime/providers/:providerId/restart", async (req, res) => {
 		const sessionId = body.sessionId ? String(body.sessionId) : activeSession?.providerId === req.params.providerId ? activeSession.id : undefined;
 		if (!sessionId) return res.status(400).json({ error: "No active session to restart" });
 		await getRuntime(req.params.providerId).restart(sessionId);
+		res.json({ ok: true, sessionId });
+	} catch (err: any) {
+		res.status(500).json({ error: err?.message ?? String(err) });
+	}
+});
+
+app.post("/api/runtime/providers/:providerId/interrupt", async (req, res) => {
+	try {
+		const body = req.body ?? {};
+		const sessionId = body.sessionId ? String(body.sessionId) : activeSession?.providerId === req.params.providerId ? activeSession.id : undefined;
+		if (!sessionId) return res.status(400).json({ error: "No active session to interrupt" });
+		await getRuntime(req.params.providerId).interrupt(sessionId);
 		res.json({ ok: true, sessionId });
 	} catch (err: any) {
 		res.status(500).json({ error: err?.message ?? String(err) });

@@ -325,6 +325,7 @@ button:disabled {
 }
 
 .cell-header {
+	width: 100%;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -332,6 +333,12 @@ button:disabled {
 	padding: 10px 12px;
 	border-bottom: 1px solid var(--border);
 	background: color-mix(in srgb, var(--surface) 64%, var(--bg));
+	color: var(--text);
+	text-align: left;
+}
+
+.cell-header svg.open {
+	transform: rotate(90deg);
 }
 
 .cell-title {
@@ -348,10 +355,22 @@ button:disabled {
 }
 
 .cell-header select {
+	margin-left: auto;
 	height: 28px;
 	padding: 0 8px;
 	border-radius: var(--radius);
 	border: 1px solid var(--border);
+	background: var(--sunken);
+	color: var(--text);
+}
+
+.title-editor {
+	width: calc(100% - 24px);
+	margin: 12px;
+	height: 34px;
+	padding: 0 9px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
 	background: var(--sunken);
 	color: var(--text);
 }
