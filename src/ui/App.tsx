@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
@@ -21,7 +21,7 @@ import {
 	faXmark,
 } from "@fortawesome/free-solid-svg-icons";
 
-type CellKind = "markdown" | "code";
+type CellKind = "markdown" | "code" | "mermaid";
 
 type RichOutput =
 	| { kind: "stream"; name: "stdout" | "stderr"; text: string }
@@ -100,6 +100,47 @@ function plainTextData(value: unknown): string {
 	return JSON.stringify(value, null, 2);
 }
 
+let mermaidInitialized = false;
+
+async function renderMermaid(source: string, id: string): Promise<string> {
+	const mermaid = (await import("mermaid")).default;
+	if (!mermaidInitialized) {
+		mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "dark" });
+		mermaidInitialized = true;
+	}
+	const result = await mermaid.render(`mermaid-${id}-${Date.now()}`, source);
+	return DOMPurify.sanitize(result.svg);
+}
+
+function MermaidView({ source, id }: { source: string; id: string }) {
+	const [svg, setSvg] = useState("");
+	const [error, setError] = useState("");
+	const [loading, setLoading] = useState(false);
+
+	useEffect(() => {
+		let cancelled = false;
+		async function render() {
+			if (!source.trim()) { setSvg(""); setError(""); setLoading(false); return; }
+			setLoading(true);
+			try {
+				const nextSvg = await renderMermaid(source, id);
+				if (!cancelled) { setSvg(nextSvg); setError(""); }
+			} catch (err) {
+				if (!cancelled) { setSvg(""); setError(err instanceof Error ? err.message : String(err)); }
+			} finally {
+				if (!cancelled) setLoading(false);
+			}
+		}
+		render();
+		return () => { cancelled = true; };
+	}, [id, source]);
+
+	if (error) return <pre className="cell-output error">{error}</pre>;
+	if (loading && !svg) return <div className="empty-output">Rendering diagram…</div>;
+	if (!svg) return <div className="empty-output">No diagram rendered.</div>;
+	return <div className="mermaid-output" dangerouslySetInnerHTML={{ __html: svg }} />;
+}
+
 function OutputView({ output }: { output: RichOutput }) {
 	if (output.kind === "status") return null;
 	if (output.kind === "stream") return <pre className={`cell-output ${output.name}`}>{output.text}</pre>;
@@ -138,20 +179,26 @@ export function App() {
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>("provider");
 	const [themeName, setThemeName] = useState<ThemeName>(() => (localStorage.getItem("scryer-io:theme") as ThemeName) || "dark");
 	const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty">("saved");
+	const [dirtyCellIds, setDirtyCellIds] = useState<Set<string>>(new Set());
 	const cellRefs = useRef(new Map<string, HTMLElement>());
 	const editorRefs = useRef(new Map<string, HTMLTextAreaElement>());
 	const selectedIndex = cells.findIndex((cell) => cell.id === selectedId);
 	const selectedCell = cells[selectedIndex] ?? cells[0];
 
-	const notebookStats = useMemo(() => {
-		const code = cells.filter((cell) => cell.kind === "code").length;
-		const provider = providerId ? `${providerId} · ${activeSession?.kernelName ?? kernelName}` : "provider not connected";
-		return `${cells.length} cells · ${code} code · ${provider} · ${saveState}`;
-	}, [activeSession?.kernelName, cells, kernelName, providerId, saveState]);
-
 	useEffect(() => {
 		localStorage.setItem("scryer-io:theme", themeName);
 	}, [themeName]);
+
+	useEffect(() => {
+		const handleKey = (event: globalThis.KeyboardEvent) => {
+			if ((event.metaKey || event.ctrlKey) && event.code === "KeyS") {
+				event.preventDefault();
+				saveNotebook();
+			}
+		};
+		window.addEventListener("keydown", handleKey);
+		return () => window.removeEventListener("keydown", handleKey);
+	}, [cells]);
 
 	useEffect(() => {
 		fetch("/api/healthz").then((res) => setApiStatus(res.ok ? "online" : "offline")).catch(() => setApiStatus("offline"));
@@ -176,8 +223,13 @@ export function App() {
 		}).catch(() => undefined);
 	}, []);
 
-	function patchCell(id: string, patch: Partial<NotebookCell>) {
+	function markDirty(id?: string) {
 		setSaveState("dirty");
+		if (id) setDirtyCellIds((current) => new Set(current).add(id));
+	}
+
+	function patchCell(id: string, patch: Partial<NotebookCell>) {
+		markDirty(id);
 		setCells((current) => current.map((cell) => (cell.id === id ? { ...cell, ...patch } : cell)));
 	}
 
@@ -188,6 +240,7 @@ export function App() {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ cells }),
 		});
+		setDirtyCellIds(new Set());
 		setSaveState("saved");
 	}
 
@@ -195,7 +248,7 @@ export function App() {
 		if (selectedIndex < 0) return;
 		const nextIndex = selectedIndex + delta;
 		if (nextIndex < 0 || nextIndex >= cells.length) return;
-		setSaveState("dirty");
+		markDirty(selectedId);
 		setCells((current) => {
 			const next = [...current];
 			const [cell] = next.splice(selectedIndex, 1);
@@ -245,7 +298,10 @@ export function App() {
 	}
 
 	async function executeCell(cell: NotebookCell) {
-		if (cell.kind !== "code") return;
+		if (cell.kind !== "code") {
+			patchCell(cell.id, { outputOpen: true, lastRun: nowLabel(), elapsedMs: 0 });
+			return;
+		}
 		if (!providerId) {
 			patchCell(cell.id, { outputOpen: true, outputs: [{ kind: "stream", name: "stderr", text: "Connect a Jupyter provider before executing code." }] });
 			return;
@@ -297,14 +353,15 @@ export function App() {
 	}
 
 	function clearOutputs() {
-		setSaveState("dirty");
+		markDirty();
+		setDirtyCellIds(new Set(cells.map((cell) => cell.id)));
 		setCells((current) => current.map((cell) => ({ ...cell, outputs: undefined, outputOpen: false, lastRun: undefined, elapsedMs: undefined })));
 	}
 
 	function addCell(position: "above" | "below" = "below", anchorId = selectedId) {
 		const id = `cell-${Date.now()}`;
 		const cell: NotebookCell = { id, kind: "code", title: "Untitled", content: "", cellOpen: true, codeOpen: true, agentOpen: false, outputOpen: false };
-		setSaveState("dirty");
+		markDirty(id);
 		setCells((current) => {
 			const anchorIndex = current.findIndex((item) => item.id === anchorId);
 			const fallback = position === "above" ? 0 : current.length;
@@ -318,7 +375,7 @@ export function App() {
 
 	function deleteSelected() {
 		if (cells.length <= 1 || selectedIndex < 0) return;
-		setSaveState("dirty");
+		markDirty();
 		setCells((current) => current.filter((cell) => cell.id !== selectedId));
 		setSelectedId(cells[Math.max(0, selectedIndex - 1)]?.id ?? cells[0].id);
 	}
@@ -327,7 +384,7 @@ export function App() {
 		if (!selectedCell) return;
 		const id = `cell-${Date.now()}`;
 		const clone = { ...selectedCell, id, title: `${selectedCell.title} copy` };
-		setSaveState("dirty");
+		markDirty(id);
 		setCells((current) => {
 			const next = [...current];
 			next.splice(selectedIndex + 1, 0, clone);
@@ -351,11 +408,16 @@ export function App() {
 		focusCell(cell.id);
 	}
 
+	function handleCellKeyCapture(event: KeyboardEvent, cell: NotebookCell) {
+		if (isCommand(event, "Escape")) { event.preventDefault(); event.stopPropagation(); collapseCellFully(cell); }
+		else if (isCommand(event, "KeyS")) { event.preventDefault(); event.stopPropagation(); saveNotebook(); }
+	}
+
 	function handleCellKey(event: KeyboardEvent, cell: NotebookCell) {
 		const target = event.target as HTMLElement;
 		const isFormTarget = ["TEXTAREA", "INPUT", "SELECT"].includes(target.tagName);
-		if (isCommand(event, "Escape")) { event.preventDefault(); event.stopPropagation(); collapseCellFully(cell); }
-		else if (isCommand(event, "Enter")) { event.preventDefault(); event.stopPropagation(); setSelectedId(cell.id); executeCells([cell]); }
+		if (isCommand(event, "Enter")) { event.preventDefault(); event.stopPropagation(); setSelectedId(cell.id); executeCells([cell]); }
+		else if (isCommand(event, "KeyS")) { event.preventDefault(); event.stopPropagation(); saveNotebook(); }
 		else if (isCommand(event, "KeyA")) { event.preventDefault(); event.stopPropagation(); addCell("above", cell.id); }
 		else if (isCommand(event, "KeyB")) { event.preventDefault(); event.stopPropagation(); addCell("below", cell.id); }
 		else if (!isFormTarget && event.code === "ArrowUp") { event.preventDefault(); const prev = cells[Math.max(0, cells.findIndex((item) => item.id === cell.id) - 1)]; if (prev) focusCell(prev.id); }
@@ -364,8 +426,7 @@ export function App() {
 	}
 
 	function handleEditorKey(event: KeyboardEvent, cell: NotebookCell) {
-		if (isCommand(event, "Escape")) { event.preventDefault(); event.stopPropagation(); collapseCellFully(cell); }
-		else if (event.code === "Escape") { event.preventDefault(); event.stopPropagation(); focusCell(cell.id); }
+		if (event.code === "Escape" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); event.stopPropagation(); focusCell(cell.id); }
 		else handleCellKey(event, cell);
 	}
 
@@ -418,18 +479,18 @@ export function App() {
 
 			<main className="notebook-layout">
 				<section className="notebook-panel" aria-label="Notebook cells">
-					<div className="notebook-meta"><span>{notebookStats}</span><span>{selectedCell ? `Selected: ${selectedCell.title}` : "No cell selected"}</span></div>
 					<div className="cell-stack">
 						{cells.map((cell, index) => (
-							<article key={cell.id} ref={(node) => { if (node) cellRefs.current.set(cell.id, node); else cellRefs.current.delete(cell.id); }} className={`cell-card ${cell.id === selectedId ? "selected" : ""}`} tabIndex={0} onKeyDown={(event) => handleCellKey(event, cell)} onClick={() => setSelectedId(cell.id)}>
+							<article key={cell.id} ref={(node) => { if (node) cellRefs.current.set(cell.id, node); else cellRefs.current.delete(cell.id); }} className={`cell-card ${cell.id === selectedId ? "selected" : ""}`} tabIndex={0} onKeyDownCapture={(event) => handleCellKeyCapture(event, cell)} onKeyDown={(event) => handleCellKey(event, cell)} onClick={() => setSelectedId(cell.id)}>
+								{dirtyCellIds.has(cell.id) && <span className="dirty-dot cell-dirty-dot" title="Changed since last save" />}
 								<div className="cell-header">
 									<button className="cell-toggle" type="button" aria-label="Toggle cell" aria-expanded={cell.cellOpen !== false} onClick={(event) => { event.stopPropagation(); setSelectedId(cell.id); patchCell(cell.id, { cellOpen: cell.cellOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.cellOpen !== false ? "open" : ""} /></button>
 									<div className="cell-heading" onClick={(event) => event.stopPropagation()}><div className="cell-title-row"><span>{index + 1}.</span><input className="cell-title-input" value={cell.title || "Untitled"} onChange={(event) => patchCell(cell.id, { title: event.target.value || "Untitled" })} /></div></div>
-									<select value={cell.kind} onClick={(event) => event.stopPropagation()} onChange={(event) => patchCell(cell.id, { kind: event.target.value as CellKind })} aria-label="Cell type"><option value="code">Code</option><option value="markdown">Markdown</option></select>
+									<select value={cell.kind} onClick={(event) => event.stopPropagation()} onChange={(event) => patchCell(cell.id, { kind: event.target.value as CellKind, outputOpen: event.target.value !== "code" ? true : cell.outputOpen })} aria-label="Cell type"><option value="code">Code</option><option value="markdown">Markdown</option><option value="mermaid">Mermaid</option></select>
 								</div>
 								<div className={`cell-body ${cell.cellOpen !== false ? "open" : ""}`}><div>
-									<div className="agent-accordion"><button type="button" aria-expanded={cell.codeOpen !== false} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { codeOpen: cell.codeOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.codeOpen !== false ? "open" : ""} /><span>{cell.kind === "markdown" ? "Markdown" : "Code"}</span></button><div className={`agent-panel ${cell.codeOpen !== false ? "open" : ""}`}><div><div className="editor-shell"><div className="line-gutter" aria-hidden="true">{lineNumbers(cell.content).map((line) => <span key={line}>{line}</span>)}</div><textarea ref={(node) => { if (node) editorRefs.current.set(cell.id, node); else editorRefs.current.delete(cell.id); }} value={cell.content} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => handleEditorKey(event, cell)} onChange={(event) => patchCell(cell.id, { content: event.target.value })} spellCheck={false} aria-label={`${cell.title} source`} /></div></div></div></div>
-									{(cell.kind === "markdown" || Boolean(cell.outputs?.length)) && <div className="agent-accordion"><button type="button" aria-expanded={Boolean(cell.outputOpen)} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { outputOpen: !cell.outputOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.outputOpen ? "open" : ""} /><span>Output</span>{cell.elapsedMs !== undefined && <small>{cell.elapsedMs}ms</small>}</button><div className={`agent-panel ${cell.outputOpen ? "open" : ""}`}><div>{cell.kind === "markdown" ? <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: renderMarkdown(cell.content) }} /> : cell.outputs?.map((output, outputIndex) => <OutputView key={outputIndex} output={output} />)}</div></div></div>}
+									<div className="agent-accordion"><button type="button" aria-expanded={cell.codeOpen !== false} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { codeOpen: cell.codeOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.codeOpen !== false ? "open" : ""} /><span>{cell.kind === "markdown" ? "Markdown" : cell.kind === "mermaid" ? "Mermaid" : "Code"}</span></button><div className={`agent-panel ${cell.codeOpen !== false ? "open" : ""}`}><div><div className="editor-shell"><div className="line-gutter" aria-hidden="true">{lineNumbers(cell.content).map((line) => <span key={line}>{line}</span>)}</div><textarea ref={(node) => { if (node) editorRefs.current.set(cell.id, node); else editorRefs.current.delete(cell.id); }} value={cell.content} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => handleEditorKey(event, cell)} onChange={(event) => patchCell(cell.id, { content: event.target.value })} spellCheck={false} aria-label={`${cell.title} source`} /></div></div></div></div>
+									{(cell.kind !== "code" || Boolean(cell.outputs?.length)) && <div className="agent-accordion"><button type="button" aria-expanded={Boolean(cell.outputOpen)} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { outputOpen: !cell.outputOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.outputOpen ? "open" : ""} /><span>Output</span>{cell.elapsedMs !== undefined && <small>{cell.elapsedMs}ms</small>}</button><div className={`agent-panel ${cell.outputOpen ? "open" : ""}`}><div>{cell.kind === "markdown" ? <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: renderMarkdown(cell.content) }} /> : cell.kind === "mermaid" ? <MermaidView source={cell.content} id={cell.id} /> : cell.outputs?.map((output, outputIndex) => <OutputView key={outputIndex} output={output} />)}</div></div></div>}
 									<div className="agent-accordion"><button type="button" aria-expanded={cell.agentOpen} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { agentOpen: !cell.agentOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.agentOpen ? "open" : ""} /><FontAwesomeIcon icon={faRobot} className="agent-bot-icon" aria-label="Cell agent" /></button><div className={`agent-panel ${cell.agentOpen ? "open" : ""}`}><div><p>Agent design lives here later. For now this is the reserved per-cell steering surface.</p><div className="agent-input-placeholder">Ask the cell agent…</div></div></div></div>
 								</div></div>
 							</article>
