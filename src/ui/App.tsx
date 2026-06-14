@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
 	faArrowDown,
@@ -59,6 +59,7 @@ function nowLabel(): string {
 export function App() {
 	const [cells, setCells] = useState<NotebookCell[]>(initialCells);
 	const [selectedId, setSelectedId] = useState(initialCells[1]?.id ?? initialCells[0].id);
+	const [apiStatus, setApiStatus] = useState<"checking" | "online" | "offline">("checking");
 	const selectedIndex = cells.findIndex((cell) => cell.id === selectedId);
 	const selectedCell = cells[selectedIndex] ?? cells[0];
 
@@ -66,6 +67,19 @@ export function App() {
 		const code = cells.filter((cell) => cell.kind === "code").length;
 		return `${cells.length} cells · ${code} code · provider not connected`;
 	}, [cells]);
+
+	useEffect(() => {
+		let cancelled = false;
+		fetch("/api/healthz")
+			.then((res) => {
+				if (!res.ok) throw new Error("API offline");
+				if (!cancelled) setApiStatus("online");
+			})
+			.catch(() => {
+				if (!cancelled) setApiStatus("offline");
+			});
+		return () => { cancelled = true; };
+	}, []);
 
 	function patchCell(id: string, patch: Partial<NotebookCell>) {
 		setCells((current) => current.map((cell) => (cell.id === id ? { ...cell, ...patch } : cell)));
@@ -136,8 +150,8 @@ export function App() {
 				</div>
 				<div className="provider-pill">
 					<FontAwesomeIcon icon={faCircleNodes} />
-					<span>Jupyter provider</span>
-					<strong>Disconnected</strong>
+					<span>API {apiStatus}</span>
+					<strong>Jupyter disconnected</strong>
 				</div>
 			</header>
 

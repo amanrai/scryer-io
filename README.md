@@ -46,8 +46,41 @@ Local Jupyter, tailnet machines, Vast instances, and Colab-like environments sho
 
 ## Development
 
+Install dependencies:
+
 ```bash
 npm install
+```
+
+Run the full local dev stack with one command:
+
+```bash
+npm run dev
+```
+
+This starts:
+
+- frontend: `http://127.0.0.1:54321`
+- backend API server: `http://127.0.0.1:54322`
+
+The Vite frontend proxies every `/api/*` request to the backend server on `54322`. The frontend should not talk directly to provider APIs; browser calls go through the local Scryer Io API server.
+
+Useful checks:
+
+```bash
 npm run typecheck
 npm run build
 ```
+
+## Port decisions
+
+- `54321` — Scryer Io frontend dev/preview port
+- `54322` — Scryer Io backend API port
+
+The backend port can be overridden with:
+
+```bash
+SCRYER_IO_API_PORT=54322 npm run dev:api
+```
+
+The default development path is still `npm run dev`, which runs both frontend and backend together.
