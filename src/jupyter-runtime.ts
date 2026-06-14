@@ -135,7 +135,7 @@ export class JupyterRuntime {
 		return toRuntimeSession(this.profile.id, session.model);
 	}
 
-	async execute(request: ExecuteRequest): Promise<ExecuteResult> {
+	async execute(request: ExecuteRequest, onOutput?: (output: CellOutput) => void): Promise<ExecuteResult> {
 		const session = request.sessionId
 			? await this.getSessionConnection(request.sessionId)
 			: await this.startAndGetSession(request);
@@ -145,6 +145,12 @@ export class JupyterRuntime {
 		let executionCount: number | null | undefined;
 		let ok = true;
 
+		const pushOutput = (output: CellOutput) => {
+			outputs.push(output);
+			onOutput?.(output);
+			if (output.kind === "error") ok = false;
+		};
+
 		const future = session.kernel.requestExecute({
 			code: request.code,
 			silent: request.silent ?? false,
@@ -153,10 +159,7 @@ export class JupyterRuntime {
 
 		future.onIOPub = (msg) => {
 			const output = outputFromMessage(msg);
-			if (output) {
-				outputs.push(output);
-				if (output.kind === "error") ok = false;
-			}
+			if (output) pushOutput(output);
 		};
 
 		const reply = await future.done;
@@ -164,7 +167,7 @@ export class JupyterRuntime {
 			executionCount = reply.content.execution_count;
 			ok = ok && reply.content.status === "ok";
 			if (reply.content.status === "error") {
-				outputs.push({
+				pushOutput({
 					kind: "error",
 					ename: reply.content.ename,
 					evalue: reply.content.evalue,

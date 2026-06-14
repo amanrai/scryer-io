@@ -58,7 +58,7 @@ textarea:focus-visible {
 
 .app-shell {
 	min-height: 100vh;
-	padding: 18px 20px 32px;
+	padding: 18px 20px 48px;
 }
 
 .topbar {
@@ -126,6 +126,35 @@ textarea:focus-visible {
 
 .toolbar-spacer {
 	flex: 1;
+}
+
+.status-bar {
+	position: fixed;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	z-index: 20;
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	height: 28px;
+	padding: 0 20px;
+	border-top: 1px solid var(--border);
+	background: color-mix(in srgb, var(--surface) 96%, transparent);
+	backdrop-filter: blur(10px);
+	color: var(--muted);
+	font-size: 12px;
+}
+
+.status-bar span:first-child {
+	min-width: 260px;
+	color: var(--text);
+}
+
+.status-bar span:not(:first-child) {
+	padding-left: 14px;
+	border-left: 1px solid var(--border);
+	white-space: nowrap;
 }
 
 button {

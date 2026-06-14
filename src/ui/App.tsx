@@ -110,6 +110,55 @@ function normalizeSource(source: unknown): string {
 	return "";
 }
 
+function mergeCarriageReturnText(previous: string, chunk: string): string {
+	let text = previous;
+	for (const part of chunk.split(/(\r\n|\r|\n)/)) {
+		if (part === "\r" || part === "\r\n") text = text.replace(/[^\n]*$/, "");
+		else if (part === "\n") text += "\n";
+		else text += part;
+	}
+	return text;
+}
+
+function textPlain(value: unknown): string | undefined {
+	if (Array.isArray(value)) return value.join("");
+	return typeof value === "string" ? value : undefined;
+}
+
+function isProgressLikeText(text: string): boolean {
+	return text.includes("\r") || /\d+%\|/.test(text);
+}
+
+function isProgressLikeOutput(output: RichOutput): boolean {
+	if (output.kind === "stream") return isProgressLikeText(output.text);
+	if (output.kind === "display_data" || output.kind === "execute_result") return isProgressLikeText(textPlain(output.data["text/plain"]) ?? "");
+	return false;
+}
+
+function appendRichOutput(outputs: RichOutput[], output: RichOutput): RichOutput[] {
+	if (output.kind === "status") return outputs;
+	const next = [...outputs];
+	const last = next[next.length - 1];
+	if (output.kind === "stream") {
+		if (last?.kind === "stream") {
+			next[next.length - 1] = { ...last, text: mergeCarriageReturnText(last.text, output.text) };
+			return next;
+		}
+		return [...next, { ...output, text: mergeCarriageReturnText("", output.text) }];
+	}
+	if ((output.kind === "display_data" || output.kind === "execute_result") && isProgressLikeOutput(output)) {
+		const progressIndex = next.findLastIndex((item) => item.kind === output.kind && isProgressLikeOutput(item));
+		if (progressIndex >= 0) {
+			const previous = next[progressIndex];
+			const currentText = textPlain(output.data["text/plain"]);
+			const previousText = (previous.kind === "display_data" || previous.kind === "execute_result") ? textPlain(previous.data["text/plain"]) : undefined;
+			next[progressIndex] = currentText && previousText ? { ...output, data: { ...output.data, "text/plain": mergeCarriageReturnText(previousText, currentText) } } : output;
+			return next;
+		}
+	}
+	return [...next, output];
+}
+
 function ipynbOutputToRich(output: any): RichOutput | undefined {
 	if (!output) return undefined;
 	if (output.kind) return output as RichOutput;
@@ -259,6 +308,7 @@ export function App() {
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>("provider");
 	const [themeName, setThemeName] = useState<ThemeName>(() => (localStorage.getItem("scryer-io:theme") as ThemeName) || "dark");
 	const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty">("saved");
+	const [statusMessage, setStatusMessage] = useState("Ready");
 	const [notebookPath, setNotebookPath] = useState("notebook.ipynb");
 	const [dirtyCellIds, setDirtyCellIds] = useState<Set<string>>(new Set());
 	const cellRefs = useRef(new Map<string, HTMLElement>());
@@ -273,14 +323,17 @@ export function App() {
 
 	useEffect(() => {
 		const handleKey = (event: globalThis.KeyboardEvent) => {
-			if ((event.metaKey || event.ctrlKey) && event.code === "KeyS") {
+			if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === "KeyR") {
+				event.preventDefault();
+				restartKernelAndClearOutputs();
+			} else if ((event.metaKey || event.ctrlKey) && event.code === "KeyS") {
 				event.preventDefault();
 				saveNotebook();
 			}
 		};
 		window.addEventListener("keydown", handleKey);
 		return () => window.removeEventListener("keydown", handleKey);
-	}, [cells]);
+	}, [cells, providerId, activeSession]);
 
 	useEffect(() => {
 		fetch("/api/healthz").then((res) => setApiStatus(res.ok ? "online" : "offline")).catch(() => setApiStatus("offline"));
@@ -309,6 +362,10 @@ export function App() {
 		}).catch(() => undefined);
 	}, []);
 
+	function setStatus(message: string) {
+		setStatusMessage(message);
+	}
+
 	function markDirty(id?: string) {
 		setSaveState("dirty");
 		if (id) setDirtyCellIds((current) => new Set(current).add(id));
@@ -321,6 +378,7 @@ export function App() {
 
 	async function saveNotebook() {
 		setSaveState("saving");
+		setStatus("Saving notebook…");
 		await fetch("/api/notebook", {
 			method: "PUT",
 			headers: { "Content-Type": "application/json" },
@@ -328,45 +386,52 @@ export function App() {
 		});
 		setDirtyCellIds(new Set());
 		setSaveState("saved");
+		setStatus("Notebook saved");
 	}
 
 	async function openNotebook() {
 		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes and open another notebook?")) return;
 		const path = window.prompt("Open .ipynb path");
 		if (!path) return;
+		setStatus("Opening notebook…");
 		const res = await fetch("/api/notebook/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
 		const json = await res.json();
-		if (!res.ok) return window.alert(json.error ?? "Failed to open notebook");
+		if (!res.ok) { setStatus("Open notebook failed"); return window.alert(json.error ?? "Failed to open notebook"); }
 		const loadedCells = cellsFromNotebook(json);
 		setNotebookPath(json.metadata?.scryer?.path ?? path);
 		setCells(loadedCells.length ? loadedCells : initialCells);
 		setSelectedId((loadedCells[0] ?? initialCells[0]).id);
 		setDirtyCellIds(new Set());
 		setSaveState("saved");
+		setStatus(`Opened ${path}`);
 	}
 
 	async function newNotebook() {
 		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes and create a new notebook?")) return;
 		const path = window.prompt("New .ipynb path");
 		if (!path) return;
+		setStatus("Creating notebook…");
 		const res = await fetch("/api/notebook/new", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
 		const json = await res.json();
-		if (!res.ok) return window.alert(json.error ?? "Failed to create notebook");
+		if (!res.ok) { setStatus("Create notebook failed"); return window.alert(json.error ?? "Failed to create notebook"); }
 		setNotebookPath(json.metadata?.scryer?.path ?? path);
 		setCells(initialCells);
 		setSelectedId(initialCells[0].id);
 		setDirtyCellIds(new Set(initialCells.map((cell) => cell.id)));
 		setSaveState("dirty");
+		setStatus(`Created ${path}`);
 	}
 
 	async function closeNotebook() {
 		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes and close this notebook?")) return;
+		setStatus("Closing notebook…");
 		await fetch("/api/notebook/close", { method: "POST" });
 		setNotebookPath("notebook.ipynb");
 		setCells(initialCells);
 		setSelectedId(initialCells[0].id);
 		setDirtyCellIds(new Set());
 		setSaveState("saved");
+		setStatus("Notebook closed");
 	}
 
 	function moveSelected(delta: -1 | 1) {
@@ -384,6 +449,7 @@ export function App() {
 
 	async function connectProvider() {
 		setIsConnecting(true);
+		setStatus("Connecting provider…");
 		try {
 			const res = await fetch("/api/runtime/providers", {
 				method: "POST",
@@ -396,9 +462,11 @@ export function App() {
 			setKernelSpecs(json.kernelSpecs ?? []);
 			const defaultSpec = (json.kernelSpecs ?? []).find((spec: KernelSpec) => spec.isDefault)?.name;
 			if (!kernelName && defaultSpec) setKernelName(defaultSpec);
-		} catch (err) {
+			setStatus(`Connected to ${json.provider.label ?? json.provider.id}`);
+		} catch (err: any) {
 			setProviderId(undefined);
 			setKernelSpecs([]);
+			setStatus(err?.message ?? "Provider connection failed");
 			console.error(err);
 		} finally {
 			setIsConnecting(false);
@@ -408,12 +476,14 @@ export function App() {
 	async function disconnectProvider() {
 		if (!providerId) return;
 		setIsConnecting(true);
+		setStatus("Disconnecting provider…");
 		try { await fetch(`/api/runtime/providers/${providerId}`, { method: "DELETE" }); }
 		finally {
 			setProviderId(undefined);
 			setKernelSpecs([]);
 			setActiveSession(undefined);
 			setIsConnecting(false);
+			setStatus("Provider disconnected");
 		}
 	}
 
@@ -424,36 +494,64 @@ export function App() {
 
 	async function executeCell(cell: NotebookCell) {
 		if (cell.kind !== "code") {
+			setStatus(`Rendered ${cell.title || "cell"}`);
 			patchCell(cell.id, { outputOpen: true, lastRun: nowLabel(), elapsedMs: 0 });
 			return;
 		}
 		if (!providerId) {
+			setStatus("Connect a Jupyter provider before executing code");
 			patchCell(cell.id, { outputOpen: true, outputs: [{ kind: "stream", name: "stderr", text: "Connect a Jupyter provider before executing code." }] });
 			return;
 		}
-		patchCell(cell.id, { outputOpen: true, outputs: [{ kind: "stream", name: "stdout", text: "Running…" }] });
+		setStatus(`Running ${cell.title || "cell"}…`);
+		markDirty(cell.id);
+		setCells((current) => current.map((item) => item.id === cell.id ? { ...item, outputOpen: true, outputs: [] } : item));
 		const stamp = nowLabel();
-		const res = await fetch(`/api/runtime/providers/${providerId}/execute`, {
+		const res = await fetch(`/api/runtime/providers/${providerId}/execute/stream`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ code: cell.content, sessionId: activeSession?.id, kernelName: kernelName || undefined }),
 		});
-		const json = await res.json();
-		if (!res.ok) throw new Error(json.error ?? "Execution failed");
-		setActiveSession(json.session);
-		patchCell(cell.id, { lastRun: stamp, elapsedMs: json.elapsedMs, outputOpen: true, outputs: json.outputs?.filter((o: RichOutput) => o.kind !== "status") ?? [] });
+		if (!res.ok || !res.body) {
+			const json = await res.json().catch(() => undefined);
+			throw new Error(json?.error ?? "Execution failed");
+		}
+		const reader = res.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = "";
+		const handleEvent = (event: any) => {
+			if (event.type === "output") {
+				setCells((current) => current.map((item) => item.id === cell.id ? { ...item, outputs: appendRichOutput(item.outputs ?? [], event.output as RichOutput) } : item));
+			} else if (event.type === "done") {
+				setActiveSession(event.session);
+				setCells((current) => current.map((item) => item.id === cell.id ? { ...item, lastRun: stamp, elapsedMs: event.elapsedMs, outputOpen: true } : item));
+				setStatus(`Finished ${cell.title || "cell"} in ${event.elapsedMs}ms`);
+			} else if (event.type === "error") {
+				throw new Error(event.error ?? "Execution failed");
+			}
+		};
+		while (true) {
+			const { value, done } = await reader.read();
+			buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+			const lines = buffer.split("\n");
+			buffer = lines.pop() ?? "";
+			for (const line of lines) if (line.trim()) handleEvent(JSON.parse(line));
+			if (done) break;
+		}
+		if (buffer.trim()) handleEvent(JSON.parse(buffer));
 	}
 
 	async function executeCells(targetCells: NotebookCell[]) {
 		setIsExecuting(true);
 		try { for (const cell of targetCells) await executeCell(cell); }
-		catch (err: any) { if (selectedCell) patchCell(selectedCell.id, { outputOpen: true, outputs: [{ kind: "stream", name: "stderr", text: err?.message ?? String(err) }] }); }
+		catch (err: any) { setStatus(err?.message ?? "Execution failed"); if (selectedCell) patchCell(selectedCell.id, { outputOpen: true, outputs: [{ kind: "stream", name: "stderr", text: err?.message ?? String(err) }] }); }
 		finally { setIsExecuting(false); }
 	}
 
 	async function restartKernel() {
-		if (!providerId || !activeSession) return;
+		if (!providerId || !activeSession) { setStatus("No active kernel to restart"); return; }
 		setIsExecuting(true);
+		setStatus("Restarting kernel…");
 		try {
 			const res = await fetch(`/api/runtime/providers/${providerId}/restart`, {
 				method: "POST",
@@ -462,18 +560,21 @@ export function App() {
 			});
 			const json = await res.json();
 			if (!res.ok) throw new Error(json.error ?? "Restart failed");
-		} catch (err) { console.error(err); }
+			setStatus("Kernel restarted");
+		} catch (err: any) { setStatus(err?.message ?? "Restart failed"); console.error(err); }
 		finally { setIsExecuting(false); }
 	}
 
 	async function interruptKernel() {
-		if (!providerId || !activeSession) return;
+		if (!providerId || !activeSession) { setStatus("No active kernel to interrupt"); return; }
+		setStatus("Interrupting kernel…");
 		try {
 			await fetch(`/api/runtime/providers/${providerId}/interrupt`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ sessionId: activeSession.id }),
 			});
+			setStatus("Kernel interrupted");
 		} finally { setIsExecuting(false); }
 	}
 
@@ -481,12 +582,36 @@ export function App() {
 		markDirty();
 		setDirtyCellIds(new Set(cells.map((cell) => cell.id)));
 		setCells((current) => current.map((cell) => ({ ...cell, outputs: undefined, outputOpen: false, lastRun: undefined, elapsedMs: undefined })));
+		setStatus("Cleared all outputs");
+	}
+
+	async function restartKernelAndClearOutputs() {
+		if (!providerId || !activeSession) { setStatus("No active kernel to restart"); return; }
+		setIsExecuting(true);
+		setStatus("Restarting kernel and clearing outputs…");
+		try {
+			const res = await fetch(`/api/runtime/providers/${providerId}/restart`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ sessionId: activeSession.id }),
+			});
+			const json = await res.json();
+			if (!res.ok) throw new Error(json.error ?? "Restart failed");
+			markDirty();
+			setDirtyCellIds(new Set(cells.map((cell) => cell.id)));
+			setCells((current) => current.map((cell) => ({ ...cell, outputs: undefined, outputOpen: false, lastRun: undefined, elapsedMs: undefined })));
+			setStatus("Kernel restarted; outputs cleared");
+		} catch (err: any) {
+			setStatus(err?.message ?? "Restart failed");
+			console.error(err);
+		} finally { setIsExecuting(false); }
 	}
 
 	function addCell(position: "above" | "below" = "below", anchorId = selectedId) {
 		const id = `cell-${Date.now()}`;
 		const cell: NotebookCell = { id, kind: "code", title: "Untitled", content: "", cellOpen: true, codeOpen: true, agentOpen: false, outputOpen: false };
 		markDirty(id);
+		setStatus(`Added cell ${position}`);
 		setCells((current) => {
 			const anchorIndex = current.findIndex((item) => item.id === anchorId);
 			const fallback = position === "above" ? 0 : current.length;
@@ -495,12 +620,13 @@ export function App() {
 			next.splice(insertAt, 0, cell);
 			return next;
 		});
-		setSelectedId(id);
+		focusCell(id);
 	}
 
 	function deleteSelected() {
 		if (cells.length <= 1 || selectedIndex < 0) return;
 		markDirty();
+		setStatus("Deleted selected cell");
 		setCells((current) => current.filter((cell) => cell.id !== selectedId));
 		setSelectedId(cells[Math.max(0, selectedIndex - 1)]?.id ?? cells[0].id);
 	}
@@ -510,12 +636,13 @@ export function App() {
 		const id = `cell-${Date.now()}`;
 		const clone = { ...selectedCell, id, title: `${selectedCell.title} copy` };
 		markDirty(id);
+		setStatus("Duplicated selected cell");
 		setCells((current) => {
 			const next = [...current];
 			next.splice(selectedIndex + 1, 0, clone);
 			return next;
 		});
-		setSelectedId(id);
+		focusCell(id);
 	}
 
 	function focusCell(id: string) {
@@ -538,6 +665,16 @@ export function App() {
 		else if (isCommand(event, "KeyS")) { event.preventDefault(); event.stopPropagation(); saveNotebook(); }
 	}
 
+	function handleWorkbenchKeyCapture(event: KeyboardEvent) {
+		const target = event.target as HTMLElement;
+		const isFormTarget = ["TEXTAREA", "INPUT", "SELECT"].includes(target.tagName);
+		if (!isFormTarget && event.key === "Tab" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey && !settingsOpen) {
+			event.preventDefault();
+			event.stopPropagation();
+			focusCell(selectedId || cells[0]?.id);
+		}
+	}
+
 	function handleCellKey(event: KeyboardEvent, cell: NotebookCell) {
 		const target = event.target as HTMLElement;
 		const isFormTarget = ["TEXTAREA", "INPUT", "SELECT"].includes(target.tagName);
@@ -551,12 +688,24 @@ export function App() {
 	}
 
 	function handleEditorKey(event: KeyboardEvent, cell: NotebookCell) {
-		if (event.code === "Escape" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); event.stopPropagation(); focusCell(cell.id); }
+		if (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+			event.preventDefault();
+			event.stopPropagation();
+			const editor = event.currentTarget;
+			const start = editor.selectionStart;
+			const end = editor.selectionEnd;
+			const nextContent = `${cell.content.slice(0, start)}\t${cell.content.slice(end)}`;
+			patchCell(cell.id, { content: nextContent });
+			requestAnimationFrame(() => {
+				editor.selectionStart = start + 1;
+				editor.selectionEnd = start + 1;
+			});
+		} else if (event.code === "Escape" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); event.stopPropagation(); focusCell(cell.id); }
 		else handleCellKey(event, cell);
 	}
 
 	return (
-		<div className="app-shell" data-theme={themeName}>
+		<div className="app-shell" data-theme={themeName} onKeyDownCapture={handleWorkbenchKeyCapture}>
 			<header className="topbar">
 				<div className="brand-block"><div className="eyebrow">Scryer Io</div><h1 title={notebookPath}>{notebookName}</h1></div>
 				<div className="provider-pill"><FontAwesomeIcon icon={faCircleNodes} /><span>API {apiStatus}</span><strong>{providerId ? `Jupyter ${providerId}` : "Jupyter disconnected"}</strong></div>
@@ -605,7 +754,7 @@ export function App() {
 				</div>
 			)}
 
-			<main className="notebook-layout">
+			<main className="notebook-layout" aria-describedby="workbench-status">
 				<section className="notebook-panel" aria-label="Notebook cells">
 					<div className="cell-stack">
 						{cells.map((cell, index) => (
@@ -626,6 +775,13 @@ export function App() {
 					</div>
 				</section>
 			</main>
+
+			<footer className="status-bar" id="workbench-status" role="status" aria-live="polite">
+				<span>{statusMessage}</span>
+				<span>{saveState === "saving" ? "Saving" : saveState === "dirty" ? `${dirtyCellIds.size} unsaved cell${dirtyCellIds.size === 1 ? "" : "s"}` : "Saved"}</span>
+				<span>{activeSession ? `Kernel ${activeSession.kernelName ?? kernelName ?? "active"}` : "Kernel disconnected"}</span>
+				<span>{selectedCell ? `Cell ${selectedIndex + 1}: ${selectedCell.title || "Untitled"}` : "No cell selected"}</span>
+			</footer>
 		</div>
 	);
 }

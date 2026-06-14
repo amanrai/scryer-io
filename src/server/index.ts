@@ -241,6 +241,35 @@ app.post("/api/runtime/providers/:providerId/execute", async (req, res) => {
 	}
 });
 
+app.post("/api/runtime/providers/:providerId/execute/stream", async (req, res) => {
+	const writeEvent = (event: unknown) => res.write(`${JSON.stringify(event)}\n`);
+	try {
+		const body = req.body ?? {};
+		const code = String(body.code ?? "");
+		if (!code.trim()) return res.status(400).json({ error: "code is required" });
+		res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+		res.setHeader("Cache-Control", "no-cache, no-transform");
+		res.setHeader("X-Accel-Buffering", "no");
+		res.flushHeaders?.();
+		const runtime = getRuntime(req.params.providerId);
+		const startedAt = performance.now();
+		const result = await runtime.execute({
+			code,
+			sessionId: body.sessionId ? String(body.sessionId) : activeSession?.providerId === req.params.providerId ? activeSession.id : undefined,
+			path: body.path ? String(body.path) : "scryer-io.ipynb",
+			kernelName: body.kernelName ? String(body.kernelName) : undefined,
+		}, (output) => writeEvent({ type: "output", output }));
+		const elapsedMs = Math.round(performance.now() - startedAt);
+		activeSession = result.session;
+		writeEvent({ type: "done", ...result, elapsedMs, text: outputText(result.outputs) });
+	} catch (err: any) {
+		if (!res.headersSent) res.status(500);
+		writeEvent({ type: "error", error: err?.message ?? String(err) });
+	} finally {
+		res.end();
+	}
+});
+
 app.use("/api", (_req, res) => {
 	res.status(404).json({ error: "Not found" });
 });
