@@ -7,9 +7,9 @@
 	--text-hi: #C8CDD4;
 	--muted: #7F8794;
 	--faint: #5C6370;
-	--accent: #E5C07B;
-	--accent-deep: #D19A66;
-	--focus: rgba(229, 192, 123, 0.45);
+	--accent: #A9C7EA;
+	--accent-deep: #86ACD8;
+	--focus: rgba(169, 199, 234, 0.45);
 	--btn-blue: #9DB8D6;
 	--btn-green: #A6C796;
 	--text-on-btn: #21252B;
@@ -137,9 +137,15 @@ button:disabled {
 .success-button {
 	display: inline-flex;
 	align-items: center;
+	justify-content: center;
 	gap: 7px;
 	height: 32px;
 	padding: 0 10px;
+}
+
+.icon-button {
+	width: 32px;
+	padding: 0;
 }
 
 .ghost-button {
@@ -161,6 +167,113 @@ button:disabled {
 .success-button {
 	background: var(--btn-green);
 	color: var(--text-on-btn);
+}
+
+.settings-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 100;
+	display: grid;
+	place-items: center;
+	padding: 24px;
+	background: rgba(0, 0, 0, 0.45);
+	backdrop-filter: blur(3px);
+}
+
+.settings-modal {
+	width: min(760px, calc(100vw - 48px));
+	max-height: min(720px, calc(100vh - 48px));
+	display: flex;
+	flex-direction: column;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--surface);
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.settings-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 14px;
+	border-bottom: 1px solid var(--border);
+}
+
+.settings-header h2 {
+	margin: 0;
+	font-size: 18px;
+	letter-spacing: -0.02em;
+	color: var(--text-hi);
+}
+
+.settings-body {
+	display: grid;
+	grid-template-columns: 160px minmax(0, 1fr);
+	min-height: 360px;
+}
+
+.settings-nav {
+	padding: 10px;
+	border-right: 1px solid var(--border);
+	background: var(--sunken);
+}
+
+.settings-nav button {
+	width: 100%;
+	height: 32px;
+	padding: 0 9px;
+	text-align: left;
+	border-left: 2px solid transparent;
+	background: transparent;
+	color: var(--muted);
+}
+
+.settings-nav button.active {
+	border-left-color: var(--accent);
+	background: var(--surface);
+	color: var(--text-hi);
+}
+
+.settings-page {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 14px;
+}
+
+.settings-copy {
+	margin: 0 0 4px;
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--muted);
+}
+
+.settings-page label {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	font-size: 12px;
+	color: var(--muted);
+}
+
+.settings-page input {
+	height: 34px;
+	padding: 0 9px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--sunken);
+	color: var(--text);
+	outline: none;
+}
+
+.settings-actions {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding-top: 4px;
+	font-size: 12px;
+	color: var(--muted);
 }
 
 .notebook-layout {
@@ -311,6 +424,10 @@ textarea {
 
 .agent-accordion svg.open {
 	transform: rotate(90deg);
+}
+
+.agent-bot-icon {
+	color: var(--accent);
 }
 
 .agent-accordion small {
