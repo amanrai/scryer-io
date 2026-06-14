@@ -47,6 +47,14 @@ type NotebookCell = {
 type KernelSpec = { name: string; displayName: string; language?: string; isDefault: boolean };
 type RuntimeSession = { id: string; path: string; kernelName?: string; providerId: string };
 type SavedProvider = { id: string; label: string; baseUrl: string; defaultKernelName?: string; token?: string };
+type IpynbCell = {
+	cell_type: "code" | "markdown" | "raw";
+	source?: string | string[];
+	metadata?: Record<string, any>;
+	outputs?: any[];
+	execution_count?: number | null;
+};
+type IpynbNotebook = { nbformat: 4; nbformat_minor: number; metadata: Record<string, any>; cells: IpynbCell[] };
 
 const initialCells: NotebookCell[] = [
 	{
@@ -92,6 +100,76 @@ function isCommand(event: KeyboardEvent, code: string): boolean {
 
 function renderMarkdown(md: string): string {
 	return DOMPurify.sanitize(marked.parse(md, { async: false }) as string);
+}
+
+function normalizeSource(source: unknown): string {
+	if (Array.isArray(source)) return source.join("");
+	if (typeof source === "string") return source;
+	return "";
+}
+
+function ipynbOutputToRich(output: any): RichOutput | undefined {
+	if (!output) return undefined;
+	if (output.kind) return output as RichOutput;
+	if (output.output_type === "stream") return { kind: "stream", name: output.name === "stderr" ? "stderr" : "stdout", text: normalizeSource(output.text) };
+	if (output.output_type === "error") return { kind: "error", ename: String(output.ename ?? "Error"), evalue: String(output.evalue ?? ""), traceback: Array.isArray(output.traceback) ? output.traceback : [] };
+	if (output.output_type === "execute_result") return { kind: "execute_result", data: output.data ?? {}, metadata: output.metadata ?? {} };
+	if (output.output_type === "display_data") return { kind: "display_data", data: output.data ?? {}, metadata: output.metadata ?? {} };
+	return { kind: "unknown", messageType: String(output.output_type ?? "unknown"), content: output };
+}
+
+function richOutputToIpynb(output: RichOutput): any | undefined {
+	if (output.kind === "status") return undefined;
+	if (output.kind === "stream") return { output_type: "stream", name: output.name, text: output.text };
+	if (output.kind === "error") return { output_type: "error", ename: output.ename, evalue: output.evalue, traceback: output.traceback };
+	if (output.kind === "execute_result") return { output_type: "execute_result", execution_count: null, data: output.data, metadata: output.metadata ?? {} };
+	if (output.kind === "display_data") return { output_type: "display_data", data: output.data, metadata: output.metadata ?? {} };
+	return { output_type: "display_data", data: { "text/plain": plainTextData(output.content) }, metadata: {} };
+}
+
+function cellsFromNotebook(notebook: any): NotebookCell[] {
+	if (Array.isArray(notebook?.cells) && notebook.nbformat !== 4) return notebook.cells as NotebookCell[];
+	return (notebook?.cells ?? []).map((cell: IpynbCell, index: number) => {
+		const scryer = cell.metadata?.scryer ?? {};
+		const ui = scryer.ui ?? {};
+		const kind = (scryer.kind === "mermaid" || scryer.kind === "markdown" || scryer.kind === "code") ? scryer.kind : cell.cell_type === "code" ? "code" : "markdown";
+		return {
+			id: String(scryer.id ?? `cell-${index + 1}`),
+			kind,
+			title: String(scryer.title ?? "Untitled"),
+			content: normalizeSource(cell.source),
+			cellOpen: ui.cellOpen ?? true,
+			codeOpen: ui.codeOpen ?? true,
+			outputOpen: ui.outputOpen ?? kind !== "code",
+			agentOpen: ui.agentOpen ?? false,
+			lastRun: scryer.lastRun,
+			elapsedMs: scryer.elapsedMs,
+			outputs: cell.outputs?.map(ipynbOutputToRich).filter(Boolean) as RichOutput[] | undefined,
+		};
+	});
+}
+
+function notebookFromCells(cells: NotebookCell[]): IpynbNotebook {
+	return {
+		nbformat: 4,
+		nbformat_minor: 5,
+		metadata: { scryer: { app: "scryer-io", version: 1 } },
+		cells: cells.map((cell) => ({
+			cell_type: cell.kind === "code" ? "code" : "markdown",
+			source: cell.content,
+			metadata: {
+				scryer: {
+					id: cell.id,
+					kind: cell.kind,
+					title: cell.title,
+					lastRun: cell.lastRun,
+					elapsedMs: cell.elapsedMs,
+					ui: { cellOpen: cell.cellOpen, codeOpen: cell.codeOpen, outputOpen: cell.outputOpen, agentOpen: cell.agentOpen },
+				},
+			},
+			...(cell.kind === "code" ? { execution_count: null, outputs: cell.outputs?.map(richOutputToIpynb).filter(Boolean) ?? [] } : {}),
+		})),
+	};
 }
 
 function plainTextData(value: unknown): string {
@@ -203,9 +281,12 @@ export function App() {
 	useEffect(() => {
 		fetch("/api/healthz").then((res) => setApiStatus(res.ok ? "online" : "offline")).catch(() => setApiStatus("offline"));
 		fetch("/api/notebook").then((res) => res.json()).then((json) => {
-			if (Array.isArray(json.cells) && json.cells.length) {
-				setCells(json.cells);
-				setSelectedId(json.cells[0].id);
+			const loadedCells = cellsFromNotebook(json);
+			if (loadedCells.length) {
+				setCells(loadedCells);
+				setSelectedId(loadedCells[0].id);
+				setDirtyCellIds(new Set());
+				setSaveState("saved");
 			}
 		}).catch(() => undefined);
 		fetch("/api/runtime/providers").then((res) => res.json()).then((json) => {
@@ -238,7 +319,7 @@ export function App() {
 		await fetch("/api/notebook", {
 			method: "PUT",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ cells }),
+			body: JSON.stringify(notebookFromCells(cells)),
 		});
 		setDirtyCellIds(new Set());
 		setSaveState("saved");

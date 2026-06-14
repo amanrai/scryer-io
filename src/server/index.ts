@@ -8,7 +8,8 @@ const DEFAULT_API_PORT = 54322;
 const port = Number(process.env.SCRYER_IO_API_PORT ?? DEFAULT_API_PORT);
 const DATA_DIR = join(process.cwd(), "data");
 const PROVIDERS_PATH = join(DATA_DIR, "providers.json");
-const NOTEBOOK_PATH = join(DATA_DIR, "notebook.json");
+const NOTEBOOK_PATH = join(DATA_DIR, "notebook.ipynb");
+const LEGACY_NOTEBOOK_PATH = join(DATA_DIR, "notebook.json");
 
 const app = express();
 const providers = new Map<string, JupyterProviderProfile>();
@@ -76,7 +77,7 @@ app.get("/api/healthz", (_req, res) => {
 });
 
 app.get("/api/notebook", async (_req, res) => {
-	res.json(await readJson(NOTEBOOK_PATH) ?? { cells: [] });
+	res.json(await readJson(NOTEBOOK_PATH) ?? await readJson(LEGACY_NOTEBOOK_PATH) ?? { nbformat: 4, nbformat_minor: 5, metadata: { scryer: { app: "scryer-io" } }, cells: [] });
 });
 
 app.put("/api/notebook", async (req, res) => {
