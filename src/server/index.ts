@@ -9,7 +9,6 @@ const port = Number(process.env.SCRYER_IO_API_PORT ?? DEFAULT_API_PORT);
 const DATA_DIR = join(process.cwd(), "data");
 const PROVIDERS_PATH = join(DATA_DIR, "providers.json");
 const NOTEBOOK_PATH = join(DATA_DIR, "notebook.ipynb");
-const LEGACY_NOTEBOOK_PATH = join(DATA_DIR, "notebook.json");
 
 const app = express();
 const providers = new Map<string, JupyterProviderProfile>();
@@ -52,6 +51,14 @@ async function saveProviders() {
 	await writeJson(PROVIDERS_PATH, { providers: [...providers.values()] });
 }
 
+function emptyNotebook() {
+	return { nbformat: 4, nbformat_minor: 5, metadata: { scryer: { app: "scryer-io", version: 1 } }, cells: [] };
+}
+
+async function readNotebook() {
+	const notebook = await readJson<any>(NOTEBOOK_PATH);
+	return notebook?.nbformat === 4 ? notebook : emptyNotebook();
+}
 function outputText(outputs: CellOutput[]): string {
 	return outputs.map((output) => {
 		if (output.kind === "stream") return output.text;
@@ -77,11 +84,11 @@ app.get("/api/healthz", (_req, res) => {
 });
 
 app.get("/api/notebook", async (_req, res) => {
-	res.json(await readJson(NOTEBOOK_PATH) ?? await readJson(LEGACY_NOTEBOOK_PATH) ?? { nbformat: 4, nbformat_minor: 5, metadata: { scryer: { app: "scryer-io" } }, cells: [] });
+	res.json(await readNotebook());
 });
 
 app.put("/api/notebook", async (req, res) => {
-	await writeJson(NOTEBOOK_PATH, req.body ?? { cells: [] });
+	await writeJson(NOTEBOOK_PATH, req.body?.nbformat === 4 ? req.body : emptyNotebook());
 	res.json({ ok: true });
 });
 

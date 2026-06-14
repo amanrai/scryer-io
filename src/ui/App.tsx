@@ -128,7 +128,7 @@ function richOutputToIpynb(output: RichOutput): any | undefined {
 }
 
 function cellsFromNotebook(notebook: any): NotebookCell[] {
-	if (Array.isArray(notebook?.cells) && notebook.nbformat !== 4) return notebook.cells as NotebookCell[];
+	if (notebook?.nbformat !== 4) return [];
 	return (notebook?.cells ?? []).map((cell: IpynbCell, index: number) => {
 		const scryer = cell.metadata?.scryer ?? {};
 		const ui = scryer.ui ?? {};
