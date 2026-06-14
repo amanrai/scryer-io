@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
@@ -40,6 +40,7 @@ type NotebookCell = {
 	agentOpen: boolean;
 	outputOpen?: boolean;
 	lastRun?: string;
+	elapsedMs?: number;
 	outputs?: RichOutput[];
 };
 
@@ -137,6 +138,8 @@ export function App() {
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>("provider");
 	const [themeName, setThemeName] = useState<ThemeName>(() => (localStorage.getItem("scryer-io:theme") as ThemeName) || "dark");
 	const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty">("saved");
+	const cellRefs = useRef(new Map<string, HTMLElement>());
+	const editorRefs = useRef(new Map<string, HTMLTextAreaElement>());
 	const selectedIndex = cells.findIndex((cell) => cell.id === selectedId);
 	const selectedCell = cells[selectedIndex] ?? cells[0];
 
@@ -257,7 +260,7 @@ export function App() {
 		const json = await res.json();
 		if (!res.ok) throw new Error(json.error ?? "Execution failed");
 		setActiveSession(json.session);
-		patchCell(cell.id, { lastRun: stamp, outputOpen: true, outputs: json.outputs?.filter((o: RichOutput) => o.kind !== "status") ?? [] });
+		patchCell(cell.id, { lastRun: stamp, elapsedMs: json.elapsedMs, outputOpen: true, outputs: json.outputs?.filter((o: RichOutput) => o.kind !== "status") ?? [] });
 	}
 
 	async function executeCells(targetCells: NotebookCell[]) {
@@ -295,7 +298,7 @@ export function App() {
 
 	function clearOutputs() {
 		setSaveState("dirty");
-		setCells((current) => current.map((cell) => ({ ...cell, outputs: undefined, outputOpen: false, lastRun: undefined })));
+		setCells((current) => current.map((cell) => ({ ...cell, outputs: undefined, outputOpen: false, lastRun: undefined, elapsedMs: undefined })));
 	}
 
 	function addCell(position: "above" | "below" = "below", anchorId = selectedId) {
@@ -333,10 +336,37 @@ export function App() {
 		setSelectedId(id);
 	}
 
+	function focusCell(id: string) {
+		setSelectedId(id);
+		requestAnimationFrame(() => cellRefs.current.get(id)?.focus());
+	}
+
+	function focusEditor(id: string) {
+		patchCell(id, { cellOpen: true, codeOpen: true });
+		requestAnimationFrame(() => editorRefs.current.get(id)?.focus());
+	}
+
+	function collapseCellFully(cell: NotebookCell) {
+		patchCell(cell.id, { cellOpen: false, codeOpen: false, outputOpen: false, agentOpen: false });
+		focusCell(cell.id);
+	}
+
 	function handleCellKey(event: KeyboardEvent, cell: NotebookCell) {
-		if (isCommand(event, "Enter")) { event.preventDefault(); event.stopPropagation(); setSelectedId(cell.id); executeCells([cell]); }
+		const target = event.target as HTMLElement;
+		const isFormTarget = ["TEXTAREA", "INPUT", "SELECT"].includes(target.tagName);
+		if (isCommand(event, "Escape")) { event.preventDefault(); event.stopPropagation(); collapseCellFully(cell); }
+		else if (isCommand(event, "Enter")) { event.preventDefault(); event.stopPropagation(); setSelectedId(cell.id); executeCells([cell]); }
 		else if (isCommand(event, "KeyA")) { event.preventDefault(); event.stopPropagation(); addCell("above", cell.id); }
 		else if (isCommand(event, "KeyB")) { event.preventDefault(); event.stopPropagation(); addCell("below", cell.id); }
+		else if (!isFormTarget && event.code === "ArrowUp") { event.preventDefault(); const prev = cells[Math.max(0, cells.findIndex((item) => item.id === cell.id) - 1)]; if (prev) focusCell(prev.id); }
+		else if (!isFormTarget && event.code === "ArrowDown") { event.preventDefault(); const next = cells[Math.min(cells.length - 1, cells.findIndex((item) => item.id === cell.id) + 1)]; if (next) focusCell(next.id); }
+		else if (!isFormTarget && event.code === "Enter") { event.preventDefault(); focusEditor(cell.id); }
+	}
+
+	function handleEditorKey(event: KeyboardEvent, cell: NotebookCell) {
+		if (isCommand(event, "Escape")) { event.preventDefault(); event.stopPropagation(); collapseCellFully(cell); }
+		else if (event.code === "Escape") { event.preventDefault(); event.stopPropagation(); focusCell(cell.id); }
+		else handleCellKey(event, cell);
 	}
 
 	return (
@@ -391,15 +421,15 @@ export function App() {
 					<div className="notebook-meta"><span>{notebookStats}</span><span>{selectedCell ? `Selected: ${selectedCell.title}` : "No cell selected"}</span></div>
 					<div className="cell-stack">
 						{cells.map((cell, index) => (
-							<article key={cell.id} className={`cell-card ${cell.id === selectedId ? "selected" : ""}`} tabIndex={0} onKeyDown={(event) => handleCellKey(event, cell)} onClick={() => setSelectedId(cell.id)}>
+							<article key={cell.id} ref={(node) => { if (node) cellRefs.current.set(cell.id, node); else cellRefs.current.delete(cell.id); }} className={`cell-card ${cell.id === selectedId ? "selected" : ""}`} tabIndex={0} onKeyDown={(event) => handleCellKey(event, cell)} onClick={() => setSelectedId(cell.id)}>
 								<div className="cell-header">
 									<button className="cell-toggle" type="button" aria-label="Toggle cell" aria-expanded={cell.cellOpen !== false} onClick={(event) => { event.stopPropagation(); setSelectedId(cell.id); patchCell(cell.id, { cellOpen: cell.cellOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.cellOpen !== false ? "open" : ""} /></button>
 									<div className="cell-heading" onClick={(event) => event.stopPropagation()}><div className="cell-title-row"><span>{index + 1}.</span><input className="cell-title-input" value={cell.title || "Untitled"} onChange={(event) => patchCell(cell.id, { title: event.target.value || "Untitled" })} /></div></div>
 									<select value={cell.kind} onClick={(event) => event.stopPropagation()} onChange={(event) => patchCell(cell.id, { kind: event.target.value as CellKind })} aria-label="Cell type"><option value="code">Code</option><option value="markdown">Markdown</option></select>
 								</div>
 								<div className={`cell-body ${cell.cellOpen !== false ? "open" : ""}`}><div>
-									<div className="agent-accordion"><button type="button" aria-expanded={cell.codeOpen !== false} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { codeOpen: cell.codeOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.codeOpen !== false ? "open" : ""} /><span>{cell.kind === "markdown" ? "Markdown" : "Code"}</span></button><div className={`agent-panel ${cell.codeOpen !== false ? "open" : ""}`}><div><div className="editor-shell"><div className="line-gutter" aria-hidden="true">{lineNumbers(cell.content).map((line) => <span key={line}>{line}</span>)}</div><textarea value={cell.content} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => handleCellKey(event, cell)} onChange={(event) => patchCell(cell.id, { content: event.target.value })} spellCheck={false} aria-label={`${cell.title} source`} /></div></div></div></div>
-									{(cell.kind === "markdown" || Boolean(cell.outputs?.length)) && <div className="agent-accordion"><button type="button" aria-expanded={Boolean(cell.outputOpen)} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { outputOpen: !cell.outputOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.outputOpen ? "open" : ""} /><span>Output</span></button><div className={`agent-panel ${cell.outputOpen ? "open" : ""}`}><div>{cell.kind === "markdown" ? <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: renderMarkdown(cell.content) }} /> : cell.outputs?.map((output, outputIndex) => <OutputView key={outputIndex} output={output} />)}</div></div></div>}
+									<div className="agent-accordion"><button type="button" aria-expanded={cell.codeOpen !== false} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { codeOpen: cell.codeOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.codeOpen !== false ? "open" : ""} /><span>{cell.kind === "markdown" ? "Markdown" : "Code"}</span></button><div className={`agent-panel ${cell.codeOpen !== false ? "open" : ""}`}><div><div className="editor-shell"><div className="line-gutter" aria-hidden="true">{lineNumbers(cell.content).map((line) => <span key={line}>{line}</span>)}</div><textarea ref={(node) => { if (node) editorRefs.current.set(cell.id, node); else editorRefs.current.delete(cell.id); }} value={cell.content} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => handleEditorKey(event, cell)} onChange={(event) => patchCell(cell.id, { content: event.target.value })} spellCheck={false} aria-label={`${cell.title} source`} /></div></div></div></div>
+									{(cell.kind === "markdown" || Boolean(cell.outputs?.length)) && <div className="agent-accordion"><button type="button" aria-expanded={Boolean(cell.outputOpen)} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { outputOpen: !cell.outputOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.outputOpen ? "open" : ""} /><span>Output</span>{cell.elapsedMs !== undefined && <small>{cell.elapsedMs}ms</small>}</button><div className={`agent-panel ${cell.outputOpen ? "open" : ""}`}><div>{cell.kind === "markdown" ? <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: renderMarkdown(cell.content) }} /> : cell.outputs?.map((output, outputIndex) => <OutputView key={outputIndex} output={output} />)}</div></div></div>}
 									<div className="agent-accordion"><button type="button" aria-expanded={cell.agentOpen} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { agentOpen: !cell.agentOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.agentOpen ? "open" : ""} /><FontAwesomeIcon icon={faRobot} className="agent-bot-icon" aria-label="Cell agent" /></button><div className={`agent-panel ${cell.agentOpen ? "open" : ""}`}><div><p>Agent design lives here later. For now this is the reserved per-cell steering surface.</p><div className="agent-input-placeholder">Ask the cell agent…</div></div></div></div>
 								</div></div>
 							</article>

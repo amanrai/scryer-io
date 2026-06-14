@@ -182,14 +182,16 @@ app.post("/api/runtime/providers/:providerId/execute", async (req, res) => {
 		const code = String(body.code ?? "");
 		if (!code.trim()) return res.status(400).json({ error: "code is required" });
 		const runtime = getRuntime(req.params.providerId);
+		const startedAt = performance.now();
 		const result = await runtime.execute({
 			code,
 			sessionId: body.sessionId ? String(body.sessionId) : activeSession?.providerId === req.params.providerId ? activeSession.id : undefined,
 			path: body.path ? String(body.path) : "scryer-io.ipynb",
 			kernelName: body.kernelName ? String(body.kernelName) : undefined,
 		});
+		const elapsedMs = Math.round(performance.now() - startedAt);
 		activeSession = result.session;
-		res.json({ ...result, text: outputText(result.outputs) });
+		res.json({ ...result, elapsedMs, text: outputText(result.outputs) });
 	} catch (err: any) {
 		res.status(500).json({ error: err?.message ?? String(err) });
 	}
