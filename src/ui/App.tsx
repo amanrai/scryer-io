@@ -333,10 +333,10 @@ export function App() {
 		setSelectedId(id);
 	}
 
-	function handleEditorKey(event: KeyboardEvent, cell: NotebookCell) {
-		if (isCommand(event, "Enter")) { event.preventDefault(); setSelectedId(cell.id); executeCells([cell]); }
-		else if (isCommand(event, "KeyA")) { event.preventDefault(); addCell("above", cell.id); }
-		else if (isCommand(event, "KeyB")) { event.preventDefault(); addCell("below", cell.id); }
+	function handleCellKey(event: KeyboardEvent, cell: NotebookCell) {
+		if (isCommand(event, "Enter")) { event.preventDefault(); event.stopPropagation(); setSelectedId(cell.id); executeCells([cell]); }
+		else if (isCommand(event, "KeyA")) { event.preventDefault(); event.stopPropagation(); addCell("above", cell.id); }
+		else if (isCommand(event, "KeyB")) { event.preventDefault(); event.stopPropagation(); addCell("below", cell.id); }
 	}
 
 	return (
@@ -391,14 +391,14 @@ export function App() {
 					<div className="notebook-meta"><span>{notebookStats}</span><span>{selectedCell ? `Selected: ${selectedCell.title}` : "No cell selected"}</span></div>
 					<div className="cell-stack">
 						{cells.map((cell, index) => (
-							<article key={cell.id} className={`cell-card ${cell.id === selectedId ? "selected" : ""}`} onClick={() => setSelectedId(cell.id)}>
+							<article key={cell.id} className={`cell-card ${cell.id === selectedId ? "selected" : ""}`} tabIndex={0} onKeyDown={(event) => handleCellKey(event, cell)} onClick={() => setSelectedId(cell.id)}>
 								<div className="cell-header">
 									<button className="cell-toggle" type="button" aria-label="Toggle cell" aria-expanded={cell.cellOpen !== false} onClick={(event) => { event.stopPropagation(); setSelectedId(cell.id); patchCell(cell.id, { cellOpen: cell.cellOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.cellOpen !== false ? "open" : ""} /></button>
 									<div className="cell-heading" onClick={(event) => event.stopPropagation()}><div className="cell-title-row"><span>{index + 1}.</span><input className="cell-title-input" value={cell.title || "Untitled"} onChange={(event) => patchCell(cell.id, { title: event.target.value || "Untitled" })} /></div></div>
 									<select value={cell.kind} onClick={(event) => event.stopPropagation()} onChange={(event) => patchCell(cell.id, { kind: event.target.value as CellKind })} aria-label="Cell type"><option value="code">Code</option><option value="markdown">Markdown</option></select>
 								</div>
 								<div className={`cell-body ${cell.cellOpen !== false ? "open" : ""}`}><div>
-									<div className="agent-accordion"><button type="button" aria-expanded={cell.codeOpen !== false} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { codeOpen: cell.codeOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.codeOpen !== false ? "open" : ""} /><span>{cell.kind === "markdown" ? "Markdown" : "Code"}</span></button><div className={`agent-panel ${cell.codeOpen !== false ? "open" : ""}`}><div><div className="editor-shell"><div className="line-gutter" aria-hidden="true">{lineNumbers(cell.content).map((line) => <span key={line}>{line}</span>)}</div><textarea value={cell.content} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => handleEditorKey(event, cell)} onChange={(event) => patchCell(cell.id, { content: event.target.value })} spellCheck={false} aria-label={`${cell.title} source`} /></div></div></div></div>
+									<div className="agent-accordion"><button type="button" aria-expanded={cell.codeOpen !== false} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { codeOpen: cell.codeOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.codeOpen !== false ? "open" : ""} /><span>{cell.kind === "markdown" ? "Markdown" : "Code"}</span></button><div className={`agent-panel ${cell.codeOpen !== false ? "open" : ""}`}><div><div className="editor-shell"><div className="line-gutter" aria-hidden="true">{lineNumbers(cell.content).map((line) => <span key={line}>{line}</span>)}</div><textarea value={cell.content} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => handleCellKey(event, cell)} onChange={(event) => patchCell(cell.id, { content: event.target.value })} spellCheck={false} aria-label={`${cell.title} source`} /></div></div></div></div>
 									{(cell.kind === "markdown" || Boolean(cell.outputs?.length)) && <div className="agent-accordion"><button type="button" aria-expanded={Boolean(cell.outputOpen)} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { outputOpen: !cell.outputOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.outputOpen ? "open" : ""} /><span>Output</span></button><div className={`agent-panel ${cell.outputOpen ? "open" : ""}`}><div>{cell.kind === "markdown" ? <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: renderMarkdown(cell.content) }} /> : cell.outputs?.map((output, outputIndex) => <OutputView key={outputIndex} output={output} />)}</div></div></div>}
 									<div className="agent-accordion"><button type="button" aria-expanded={cell.agentOpen} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { agentOpen: !cell.agentOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.agentOpen ? "open" : ""} /><FontAwesomeIcon icon={faRobot} className="agent-bot-icon" aria-label="Cell agent" /></button><div className={`agent-panel ${cell.agentOpen ? "open" : ""}`}><div><p>Agent design lives here later. For now this is the reserved per-cell steering surface.</p><div className="agent-input-placeholder">Ask the cell agent…</div></div></div></div>
 								</div></div>
