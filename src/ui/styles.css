@@ -29,6 +29,20 @@ body {
 	background: var(--bg);
 }
 
+.app-shell[data-theme="light"] {
+	--bg: #FAFAFA;
+	--surface: #FFFFFF;
+	--sunken: #EFEFEF;
+	--border: rgba(0, 0, 0, 0.07);
+	--text: #383A42;
+	--text-hi: #2E3138;
+	--muted: #696C77;
+	--faint: #A0A1A7;
+	--accent: #5D8FC9;
+	--accent-deep: #3F73AE;
+	--focus: rgba(93, 143, 201, 0.35);
+}
+
 button,
 select,
 textarea {
@@ -276,6 +290,28 @@ button:disabled {
 	color: var(--muted);
 }
 
+.theme-options {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 10px;
+}
+
+.theme-option {
+	height: 58px;
+	padding: 0 12px;
+	border: 1px solid var(--border);
+	border-left: 2px solid transparent;
+	background: var(--sunken);
+	color: var(--text);
+	text-align: left;
+}
+
+.theme-option.active {
+	border-left-color: var(--accent);
+	background: var(--surface);
+	color: var(--text-hi);
+}
+
 .notebook-layout {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr);
@@ -326,10 +362,10 @@ button:disabled {
 
 .cell-header {
 	width: 100%;
-	display: flex;
+	display: grid;
+	grid-template-columns: 24px minmax(0, 1fr) auto;
 	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
+	gap: 10px;
 	padding: 10px 12px;
 	border-bottom: 1px solid var(--border);
 	background: color-mix(in srgb, var(--surface) 64%, var(--bg));
@@ -337,8 +373,58 @@ button:disabled {
 	text-align: left;
 }
 
-.cell-header svg.open {
+.cell-toggle {
+	width: 24px;
+	height: 24px;
+	display: grid;
+	place-items: center;
+	background: transparent;
+	color: var(--muted);
+}
+
+.cell-toggle:hover {
+	background: var(--sunken);
+	color: var(--text-hi);
+}
+
+.cell-header svg.open,
+.cell-toggle svg.open {
 	transform: rotate(90deg);
+}
+
+.cell-heading {
+	min-width: 0;
+}
+
+.cell-title-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text-hi);
+	letter-spacing: -0.01em;
+}
+
+.cell-title-input {
+	width: min(520px, 100%);
+	min-width: 160px;
+	height: 24px;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: var(--radius);
+	background: transparent;
+	color: var(--text-hi);
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
+
+.cell-title-input:hover,
+.cell-title-input:focus {
+	padding: 0 6px;
+	border-color: var(--border);
+	background: var(--sunken);
+	outline: none;
 }
 
 .cell-title {
@@ -360,17 +446,6 @@ button:disabled {
 	padding: 0 8px;
 	border-radius: var(--radius);
 	border: 1px solid var(--border);
-	background: var(--sunken);
-	color: var(--text);
-}
-
-.title-editor {
-	width: calc(100% - 24px);
-	margin: 12px;
-	height: 34px;
-	padding: 0 9px;
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
 	background: var(--sunken);
 	color: var(--text);
 }

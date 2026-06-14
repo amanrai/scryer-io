@@ -34,7 +34,6 @@ type NotebookCell = {
 	title: string;
 	content: string;
 	cellOpen?: boolean;
-	titleOpen?: boolean;
 	codeOpen?: boolean;
 	agentOpen: boolean;
 	outputOpen?: boolean;
@@ -53,7 +52,6 @@ const initialCells: NotebookCell[] = [
 		title: "Problem frame",
 		content: "# Sub-50M Chess GM\n\nUse this notebook to sketch experiments, execute small probes, and keep outputs attached to the work.",
 		cellOpen: true,
-		titleOpen: false,
 		codeOpen: true,
 		agentOpen: false,
 	},
@@ -63,7 +61,6 @@ const initialCells: NotebookCell[] = [
 		title: "Runtime smoke test",
 		content: "budget = 50_000_000\ntarget = 'jupyter-provider'\n{'budget': budget, 'target': target}",
 		cellOpen: true,
-		titleOpen: false,
 		codeOpen: true,
 		agentOpen: true,
 	},
@@ -73,7 +70,6 @@ const initialCells: NotebookCell[] = [
 		title: "Library smoke test",
 		content: "import sys\nimport numpy as np\nimport pandas as pd\n\n{'python': sys.version.split()[0], 'numpy': np.__version__, 'pandas': pd.__version__}",
 		cellOpen: true,
-		titleOpen: false,
 		codeOpen: true,
 		agentOpen: false,
 	},
@@ -131,6 +127,9 @@ function OutputView({ output }: { output: RichOutput }) {
 	return <pre className="cell-output">{plainTextData(output.content)}</pre>;
 }
 
+type SettingsPage = "provider" | "theme";
+type ThemeName = "dark" | "light";
+
 export function App() {
 	const [cells, setCells] = useState<NotebookCell[]>(initialCells);
 	const [selectedId, setSelectedId] = useState(initialCells[1]?.id ?? initialCells[0].id);
@@ -144,6 +143,8 @@ export function App() {
 	const [isConnecting, setIsConnecting] = useState(false);
 	const [isExecuting, setIsExecuting] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [settingsPage, setSettingsPage] = useState<SettingsPage>("provider");
+	const [themeName, setThemeName] = useState<ThemeName>(() => (localStorage.getItem("scryer-io:theme") as ThemeName) || "dark");
 	const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty">("saved");
 	const selectedIndex = cells.findIndex((cell) => cell.id === selectedId);
 	const selectedCell = cells[selectedIndex] ?? cells[0];
@@ -153,6 +154,10 @@ export function App() {
 		const provider = providerId ? `${providerId} · ${activeSession?.kernelName ?? kernelName}` : "provider not connected";
 		return `${cells.length} cells · ${code} code · ${provider} · ${saveState}`;
 	}, [activeSession?.kernelName, cells, kernelName, providerId, saveState]);
+
+	useEffect(() => {
+		localStorage.setItem("scryer-io:theme", themeName);
+	}, [themeName]);
 
 	useEffect(() => {
 		fetch("/api/healthz").then((res) => setApiStatus(res.ok ? "online" : "offline")).catch(() => setApiStatus("offline"));
@@ -304,7 +309,7 @@ export function App() {
 
 	function addCell(position: "above" | "below" = "below", anchorId = selectedId) {
 		const id = `cell-${Date.now()}`;
-		const cell: NotebookCell = { id, kind: "code", title: "Untitled", content: "", cellOpen: true, titleOpen: false, codeOpen: true, agentOpen: false, outputOpen: false };
+		const cell: NotebookCell = { id, kind: "code", title: "Untitled", content: "", cellOpen: true, codeOpen: true, agentOpen: false, outputOpen: false };
 		setSaveState("dirty");
 		setCells((current) => {
 			const anchorIndex = current.findIndex((item) => item.id === anchorId);
@@ -344,7 +349,7 @@ export function App() {
 	}
 
 	return (
-		<div className="app-shell">
+		<div className="app-shell" data-theme={themeName}>
 			<header className="topbar">
 				<div className="brand-block"><div className="eyebrow">Scryer Io</div><h1>Notebook workbench</h1></div>
 				<div className="provider-pill"><FontAwesomeIcon icon={faCircleNodes} /><span>API {apiStatus}</span><strong>{providerId ? `Jupyter ${providerId}` : "Jupyter disconnected"}</strong></div>
@@ -372,16 +377,19 @@ export function App() {
 			{settingsOpen && (
 				<div className="settings-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}>
 					<section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}>
-						<header className="settings-header"><div><div className="eyebrow">Settings</div><h2 id="settings-title">Provider</h2></div><button className="ghost-button icon-button" title="Close settings" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><FontAwesomeIcon icon={faXmark} /></button></header>
+						<header className="settings-header"><div><div className="eyebrow">Settings</div><h2 id="settings-title">{settingsPage === "provider" ? "Provider" : "Theme"}</h2></div><button className="ghost-button icon-button" title="Close settings" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><FontAwesomeIcon icon={faXmark} /></button></header>
 						<div className="settings-body">
-							<nav className="settings-nav" aria-label="Settings pages"><button className="active" type="button">Provider</button></nav>
-							<div className="settings-page">
+							<nav className="settings-nav" aria-label="Settings pages"><button className={settingsPage === "provider" ? "active" : ""} type="button" onClick={() => setSettingsPage("provider")}>Provider</button><button className={settingsPage === "theme" ? "active" : ""} type="button" onClick={() => setSettingsPage("theme")}>Theme</button></nav>
+							{settingsPage === "provider" ? <div className="settings-page">
 								<p className="settings-copy">Connect this Scryer Io server to a Jupyter endpoint. Values are saved on the backend for every browser using this server.</p>
 								<label><span>Jupyter URL</span><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="http://127.0.0.1:8888/" /></label>
 								<label><span>Token</span><input value={token} onChange={(event) => setToken(event.target.value)} placeholder="paste token" type="password" /></label>
 								<label><span>Kernel</span><input value={kernelName} onChange={(event) => setKernelName(event.target.value)} list="kernel-specs" placeholder="python3" /><datalist id="kernel-specs">{kernelSpecs.map((spec) => <option key={spec.name} value={spec.name}>{spec.displayName}</option>)}</datalist></label>
 								<div className="settings-actions"><button className={providerId ? "success-button" : "primary-button"} onClick={toggleProviderConnection} disabled={isConnecting || apiStatus !== "online"}><FontAwesomeIcon icon={faCircleNodes} /> {isConnecting ? "Working…" : providerId ? "Connected" : "Connect"}</button></div>
-							</div>
+							</div> : <div className="settings-page">
+								<p className="settings-copy">Choose the Scryer Io interface theme. This preference is stored in this browser.</p>
+								<div className="theme-options"><button className={themeName === "dark" ? "theme-option active" : "theme-option"} onClick={() => setThemeName("dark")}>One dark</button><button className={themeName === "light" ? "theme-option active" : "theme-option"} onClick={() => setThemeName("light")}>One light</button></div>
+							</div>}
 						</div>
 					</section>
 				</div>
@@ -393,13 +401,12 @@ export function App() {
 					<div className="cell-stack">
 						{cells.map((cell, index) => (
 							<article key={cell.id} className={`cell-card ${cell.id === selectedId ? "selected" : ""}`} onClick={() => setSelectedId(cell.id)}>
-								<button className="cell-header" type="button" aria-expanded={cell.cellOpen !== false} onClick={(event) => { event.stopPropagation(); setSelectedId(cell.id); patchCell(cell.id, { cellOpen: cell.cellOpen === false }); }}>
-									<FontAwesomeIcon icon={faChevronRight} className={cell.cellOpen !== false ? "open" : ""} />
-									<div><div className="cell-title">{index + 1}. {cell.title}</div><div className="cell-subtitle">{cell.kind} cell{cell.lastRun ? ` · last run ${cell.lastRun}` : ""}</div></div>
+								<div className="cell-header">
+									<button className="cell-toggle" type="button" aria-label="Toggle cell" aria-expanded={cell.cellOpen !== false} onClick={(event) => { event.stopPropagation(); setSelectedId(cell.id); patchCell(cell.id, { cellOpen: cell.cellOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.cellOpen !== false ? "open" : ""} /></button>
+									<div className="cell-heading" onClick={(event) => event.stopPropagation()}><div className="cell-title-row"><span>{index + 1}.</span><input className="cell-title-input" value={cell.title || "Untitled"} onChange={(event) => patchCell(cell.id, { title: event.target.value || "Untitled" })} /></div><div className="cell-subtitle">{cell.kind} cell{cell.lastRun ? ` · last run ${cell.lastRun}` : ""}</div></div>
 									<select value={cell.kind} onClick={(event) => event.stopPropagation()} onChange={(event) => patchCell(cell.id, { kind: event.target.value as CellKind })} aria-label="Cell type"><option value="code">Code</option><option value="markdown">Markdown</option></select>
-								</button>
+								</div>
 								<div className={`cell-body ${cell.cellOpen !== false ? "open" : ""}`}><div>
-									<div className="agent-accordion"><button type="button" aria-expanded={Boolean(cell.titleOpen)} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { titleOpen: !cell.titleOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.titleOpen ? "open" : ""} /><span>Title</span></button><div className={`agent-panel ${cell.titleOpen ? "open" : ""}`}><div><input className="title-editor" value={cell.title || "Untitled"} onChange={(event) => patchCell(cell.id, { title: event.target.value || "Untitled" })} /></div></div></div>
 									<div className="agent-accordion"><button type="button" aria-expanded={cell.codeOpen !== false} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { codeOpen: cell.codeOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.codeOpen !== false ? "open" : ""} /><span>{cell.kind === "markdown" ? "Markdown" : "Code"}</span></button><div className={`agent-panel ${cell.codeOpen !== false ? "open" : ""}`}><div><div className="editor-shell"><div className="line-gutter" aria-hidden="true">{lineNumbers(cell.content).map((line) => <span key={line}>{line}</span>)}</div><textarea value={cell.content} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => handleEditorKey(event, cell)} onChange={(event) => patchCell(cell.id, { content: event.target.value })} spellCheck={false} aria-label={`${cell.title} source`} /></div>{cell.kind === "markdown" && <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: renderMarkdown(cell.content) }} />}</div></div></div>
 									{Boolean(cell.outputs?.length) && <div className="agent-accordion"><button type="button" aria-expanded={Boolean(cell.outputOpen)} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { outputOpen: !cell.outputOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.outputOpen ? "open" : ""} /><span>Output</span></button><div className={`agent-panel ${cell.outputOpen ? "open" : ""}`}><div>{cell.outputs?.map((output, outputIndex) => <OutputView key={outputIndex} output={output} />)}</div></div></div>}
 									<div className="agent-accordion"><button type="button" aria-expanded={cell.agentOpen} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { agentOpen: !cell.agentOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.agentOpen ? "open" : ""} /><FontAwesomeIcon icon={faRobot} className="agent-bot-icon" aria-label="Cell agent" /></button><div className={`agent-panel ${cell.agentOpen ? "open" : ""}`}><div><p>Agent design lives here later. For now this is the reserved per-cell steering surface.</p><div className="agent-input-placeholder">Ask the cell agent…</div></div></div></div>
