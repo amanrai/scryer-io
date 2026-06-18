@@ -1,6 +1,6 @@
 import type { KeyboardEvent } from "react";
 
-export type CellKind = "markdown" | "code";
+export type CellKind = "markdown" | "code" | "mermaid";
 
 export type RichOutput =
 	| { kind: "stream"; name: "stdout" | "stderr"; text: string }
@@ -14,18 +14,33 @@ export type NotebookCell = {
 	kind: CellKind;
 	title: string;
 	content: string;
+	cellOpen?: boolean;
+	codeOpen?: boolean;
 	agentOpen: boolean;
+	outputOpen?: boolean;
 	lastRun?: string;
+	elapsedMs?: number;
 	outputs?: RichOutput[];
 };
 
 export type KernelSpec = { name: string; displayName: string; language?: string; isDefault: boolean };
 export type RuntimeSession = { id: string; path: string; kernelName?: string; providerId: string };
 export type SavedProvider = { id: string; label: string; baseUrl: string; defaultKernelName?: string; token?: string };
+export type FileEntry = { name: string; path: string; isDir: boolean; size?: number; modified?: string };
+export type VariableRow = { name: string; type: string; repr: string };
+export type KernelStatus = "idle" | "busy" | "dead" | "unknown";
+export type AppMode = "explorer" | "notebook" | "file" | "terminal" | "snippets";
+export type LeftPanel = "toc" | "files" | "variables" | null;
+export type ThemeName = "dark" | "light";
 
-export function lineNumbers(text: string): number[] {
-	return Array.from({ length: Math.max(1, text.split("\n").length) }, (_, index) => index + 1);
-}
+export type IpynbCell = {
+	cell_type: "code" | "markdown" | "raw";
+	source?: string | string[];
+	metadata?: Record<string, any>;
+	outputs?: any[];
+	execution_count?: number | null;
+};
+export type IpynbNotebook = { nbformat: 4; nbformat_minor: number; metadata: Record<string, any>; cells: IpynbCell[] };
 
 export function nowLabel(): string {
 	return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -33,19 +48,4 @@ export function nowLabel(): string {
 
 export function isCommand(event: KeyboardEvent, code: string): boolean {
 	return event.code === code && (event.metaKey || event.ctrlKey);
-}
-
-export function escapeHtml(text: string): string {
-	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-export function renderMarkdown(md: string): string {
-	return escapeHtml(md)
-		.replace(/^### (.*)$/gm, "<h3>$1</h3>")
-		.replace(/^## (.*)$/gm, "<h2>$1</h2>")
-		.replace(/^# (.*)$/gm, "<h1>$1</h1>")
-		.replace(/`([^`]+)`/g, "<code>$1</code>")
-		.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-		.replace(/^[-*] (.*)$/gm, "<div class=\"md-bullet\">• $1</div>")
-		.replace(/\n/g, "<br />");
 }

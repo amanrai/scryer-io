@@ -49,6 +49,21 @@ export type ExecuteRequest = {
 	storeHistory?: boolean;
 };
 
+export type SnippetCell = {
+	kind: "code" | "markdown" | "mermaid";
+	title: string;
+	content: string;
+};
+
+export type Snippet = {
+	id: string;
+	name: string;
+	createdBy: "human" | "agent";
+	cells: SnippetCell[];
+	createdAt: string;
+	updatedAt: string;
+};
+
 export type CellOutput =
 	| { kind: "stream"; name: "stdout" | "stderr"; text: string }
 	| { kind: "execute_result" | "display_data"; data: Record<string, unknown>; metadata?: Record<string, unknown> }

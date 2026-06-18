@@ -4,7 +4,7 @@ The purpose of this project is to remove the ceremony behind getting started wit
 
 Scryer Io is an agent-augmented notebook workbench.
 
-The goal is to provide a fresh local-first notebook interface backed by real execution kernels, starting with Jupyter-compatible runtimes. Notebooks should be able to connect to different execution providers such as local machines, tailnet hosts, Vast instances, and eventually Colab-like environments.
+The goal is to provide a fresh local-first notebook interface backed by real execution kernels, starting with Jupyter-compatible runtimes. Notebooks should be able to connect to different execution providers such as local machines, tailnet hosts, Vast instances, SageMaker notebooks, and eventually Colab-like environments.
 
 Core ideas:
 
@@ -19,15 +19,15 @@ This repo will start standalone. Kanbaner/Scryer integration can come after the 
 
 ## First abstraction
 
-Scryer Io treats local and remote Jupyter the same way: both are just Jupyter server endpoints.
+Scryer Io treats every Jupyter backend as a remote endpoint. A local Jupyter server is just the nearest remote.
 
 A provider profile describes a server:
 
 ```ts
 const profile = {
-  id: "local",
+  id: "remote",
   kind: "jupyter",
-  label: "Local Jupyter",
+  label: "Remote Jupyter",
   baseUrl: "http://127.0.0.1:8888/",
   auth: { kind: "token", token: "..." },
   defaultKernelName: "python3",
@@ -42,7 +42,7 @@ The runtime client can:
 - execute code
 - interrupt/restart/shutdown kernels
 
-Local Jupyter, tailnet machines, Vast instances, and Colab-like environments should eventually all reduce to provider profiles plus adapters.
+Plain remote Jupyter, tailnet machines, Vast instances, SageMaker notebooks, and Colab-like environments should eventually all reduce to provider profiles plus adapters.
 
 ## Development
 
@@ -71,6 +71,10 @@ Useful checks:
 npm run typecheck
 npm run build
 ```
+
+## Current implementation notes
+
+See `docs/current-state.md` for the current local implementation state, including notebook UI changes, backend endpoints, terminal support, Vast.ai flow, and known caveats.
 
 ## Port decisions
 

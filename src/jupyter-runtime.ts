@@ -185,6 +185,45 @@ export class JupyterRuntime {
 		};
 	}
 
+	private authHeaders(): Record<string, string> {
+		const token = this.profile.auth.kind === "token" ? this.profile.auth.token : "";
+		return token ? { Authorization: `token ${token}` } : {};
+	}
+
+	get authToken(): string {
+		return this.profile.auth.kind === "token" ? this.profile.auth.token : "";
+	}
+
+	async createTerminal(): Promise<{ name: string }> {
+		const res = await fetch(`${this.settings.baseUrl}api/terminals`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...this.authHeaders() },
+		});
+		if (!res.ok) throw new Error(`Failed to create terminal (${res.status})`);
+		const json = (await res.json()) as { name: string };
+		return { name: json.name };
+	}
+
+	terminalChannelsUrl(name: string): string {
+		const wsBase = this.settings.wsUrl.endsWith("/") ? this.settings.wsUrl : `${this.settings.wsUrl}/`;
+		const url = new URL(`terminals/websocket/${name}`, wsBase);
+		const token = this.authToken;
+		if (token) url.searchParams.set("token", token);
+		return url.toString();
+	}
+
+	async getKernelStatus(sessionId?: string): Promise<{ status: string; kernelId?: string }> {
+		if (!sessionId) return { status: "unknown" };
+		try {
+			const session = await this.getSessionConnection(sessionId);
+			const kernel = session.kernel;
+			if (!kernel) return { status: "dead" };
+			return { status: kernel.status, kernelId: kernel.id };
+		} catch {
+			return { status: "unknown" };
+		}
+	}
+
 	async interrupt(sessionId: string): Promise<void> {
 		const session = await this.getSessionConnection(sessionId);
 		if (!session.kernel) throw new Error(`Session ${sessionId} has no active kernel`);

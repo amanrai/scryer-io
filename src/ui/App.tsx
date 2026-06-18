@@ -1,62 +1,36 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import DOMPurify from "dompurify";
-import { marked } from "marked";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import "katex/dist/katex.min.css";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
-	faArrowDown,
-	faArrowUp,
-	faBolt,
-	faChevronRight,
-	faCircleNodes,
-	faClone,
 	faEraser,
 	faFile,
 	faFloppyDisk,
 	faFolderOpen,
 	faGear,
+	faLayerGroup,
+	faMagnifyingGlass,
 	faPlay,
 	faPlus,
-	faRobot,
 	faRotateRight,
-	faStop,
-	faTrash,
+	faTerminal,
 	faXmark,
 } from "@fortawesome/free-solid-svg-icons";
-
-type CellKind = "markdown" | "code" | "mermaid";
-
-type RichOutput =
-	| { kind: "stream"; name: "stdout" | "stderr"; text: string }
-	| { kind: "execute_result" | "display_data"; data: Record<string, unknown>; metadata?: Record<string, unknown> }
-	| { kind: "error"; ename: string; evalue: string; traceback: string[] }
-	| { kind: "status"; executionState: string }
-	| { kind: "unknown"; messageType: string; content: unknown };
-
-type NotebookCell = {
-	id: string;
-	kind: CellKind;
-	title: string;
-	content: string;
-	cellOpen?: boolean;
-	codeOpen?: boolean;
-	agentOpen: boolean;
-	outputOpen?: boolean;
-	lastRun?: string;
-	elapsedMs?: number;
-	outputs?: RichOutput[];
-};
-
-type KernelSpec = { name: string; displayName: string; language?: string; isDefault: boolean };
-type RuntimeSession = { id: string; path: string; kernelName?: string; providerId: string };
-type SavedProvider = { id: string; label: string; baseUrl: string; defaultKernelName?: string; token?: string };
-type IpynbCell = {
-	cell_type: "code" | "markdown" | "raw";
-	source?: string | string[];
-	metadata?: Record<string, any>;
-	outputs?: any[];
-	execution_count?: number | null;
-};
-type IpynbNotebook = { nbformat: 4; nbformat_minor: number; metadata: Record<string, any>; cells: IpynbCell[] };
+import { type CodeEditorHandle } from "./components/CodeEditor.js";
+import { TerminalPane } from "./components/TerminalPane.js";
+import { VastWizard } from "./components/VastWizard.js";
+import { CommandPalette, type PaletteCommand } from "./components/CommandPalette.js";
+import { SnippetsScreen } from "./components/SnippetsScreen.js";
+import { NotebookCellView } from "./components/NotebookCellView.js";
+import { SettingsModal, type SettingsPage } from "./components/SettingsModal.js";
+import { Sidebar } from "./components/Sidebar.js";
+import { FindBar } from "./components/FindBar.js";
+import { ExplorerPane } from "./components/ExplorerPane.js";
+import { FileEditorPane } from "./components/FileEditorPane.js";
+import { NotebookToolbar } from "./components/NotebookToolbar.js";
+import { StatusBar } from "./components/StatusBar.js";
+import { listSnippets, createSnippet, type Snippet } from "./snippets.js";
+import { appendRichOutput, cellsFromNotebook, countOccurrences, notebookFromCells, tableOfContents } from "./ipynb.js";
+import { isCommand, nowLabel, type AppMode, type FileEntry, type KernelSpec, type KernelStatus, type LeftPanel, type NotebookCell, type RichOutput, type RuntimeSession, type SavedProvider, type ThemeName, type VariableRow } from "./types.js";
 
 const initialCells: NotebookCell[] = [
 	{
@@ -88,213 +62,10 @@ const initialCells: NotebookCell[] = [
 	},
 ];
 
-function lineNumbers(text: string): number[] {
-	return Array.from({ length: Math.max(1, text.split("\n").length) }, (_, index) => index + 1);
-}
-
-function nowLabel(): string {
-	return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-function isCommand(event: KeyboardEvent, code: string): boolean {
-	return event.code === code && (event.metaKey || event.ctrlKey);
-}
-
-function renderMarkdown(md: string): string {
-	return DOMPurify.sanitize(marked.parse(md, { async: false }) as string);
-}
-
-function normalizeSource(source: unknown): string {
-	if (Array.isArray(source)) return source.join("");
-	if (typeof source === "string") return source;
-	return "";
-}
-
-function mergeCarriageReturnText(previous: string, chunk: string): string {
-	let text = previous;
-	for (const part of chunk.split(/(\r\n|\r|\n)/)) {
-		if (part === "\r" || part === "\r\n") text = text.replace(/[^\n]*$/, "");
-		else if (part === "\n") text += "\n";
-		else text += part;
-	}
-	return text;
-}
-
-function textPlain(value: unknown): string | undefined {
-	if (Array.isArray(value)) return value.join("");
-	return typeof value === "string" ? value : undefined;
-}
-
-function isProgressLikeText(text: string): boolean {
-	return text.includes("\r") || /\d+%\|/.test(text);
-}
-
-function isProgressLikeOutput(output: RichOutput): boolean {
-	if (output.kind === "stream") return isProgressLikeText(output.text);
-	if (output.kind === "display_data" || output.kind === "execute_result") return isProgressLikeText(textPlain(output.data["text/plain"]) ?? "");
-	return false;
-}
-
-function appendRichOutput(outputs: RichOutput[], output: RichOutput): RichOutput[] {
-	if (output.kind === "status") return outputs;
-	const next = [...outputs];
-	const last = next[next.length - 1];
-	if (output.kind === "stream") {
-		if (last?.kind === "stream") {
-			next[next.length - 1] = { ...last, text: mergeCarriageReturnText(last.text, output.text) };
-			return next;
-		}
-		return [...next, { ...output, text: mergeCarriageReturnText("", output.text) }];
-	}
-	if ((output.kind === "display_data" || output.kind === "execute_result") && isProgressLikeOutput(output)) {
-		const progressIndex = next.findLastIndex((item) => item.kind === output.kind && isProgressLikeOutput(item));
-		if (progressIndex >= 0) {
-			const previous = next[progressIndex];
-			const currentText = textPlain(output.data["text/plain"]);
-			const previousText = (previous.kind === "display_data" || previous.kind === "execute_result") ? textPlain(previous.data["text/plain"]) : undefined;
-			next[progressIndex] = currentText && previousText ? { ...output, data: { ...output.data, "text/plain": mergeCarriageReturnText(previousText, currentText) } } : output;
-			return next;
-		}
-	}
-	return [...next, output];
-}
-
-function ipynbOutputToRich(output: any): RichOutput | undefined {
-	if (!output) return undefined;
-	if (output.kind) return output as RichOutput;
-	if (output.output_type === "stream") return { kind: "stream", name: output.name === "stderr" ? "stderr" : "stdout", text: normalizeSource(output.text) };
-	if (output.output_type === "error") return { kind: "error", ename: String(output.ename ?? "Error"), evalue: String(output.evalue ?? ""), traceback: Array.isArray(output.traceback) ? output.traceback : [] };
-	if (output.output_type === "execute_result") return { kind: "execute_result", data: output.data ?? {}, metadata: output.metadata ?? {} };
-	if (output.output_type === "display_data") return { kind: "display_data", data: output.data ?? {}, metadata: output.metadata ?? {} };
-	return { kind: "unknown", messageType: String(output.output_type ?? "unknown"), content: output };
-}
-
-function richOutputToIpynb(output: RichOutput): any | undefined {
-	if (output.kind === "status") return undefined;
-	if (output.kind === "stream") return { output_type: "stream", name: output.name, text: output.text };
-	if (output.kind === "error") return { output_type: "error", ename: output.ename, evalue: output.evalue, traceback: output.traceback };
-	if (output.kind === "execute_result") return { output_type: "execute_result", execution_count: null, data: output.data, metadata: output.metadata ?? {} };
-	if (output.kind === "display_data") return { output_type: "display_data", data: output.data, metadata: output.metadata ?? {} };
-	return { output_type: "display_data", data: { "text/plain": plainTextData(output.content) }, metadata: {} };
-}
-
-function cellsFromNotebook(notebook: any): NotebookCell[] {
-	if (notebook?.nbformat !== 4) return [];
-	return (notebook?.cells ?? []).map((cell: IpynbCell, index: number) => {
-		const scryer = cell.metadata?.scryer ?? {};
-		const ui = scryer.ui ?? {};
-		const kind = (scryer.kind === "mermaid" || scryer.kind === "markdown" || scryer.kind === "code") ? scryer.kind : cell.cell_type === "code" ? "code" : "markdown";
-		return {
-			id: String(scryer.id ?? `cell-${index + 1}`),
-			kind,
-			title: String(scryer.title ?? "Untitled"),
-			content: normalizeSource(cell.source),
-			cellOpen: ui.cellOpen ?? true,
-			codeOpen: ui.codeOpen ?? true,
-			outputOpen: ui.outputOpen ?? kind !== "code",
-			agentOpen: ui.agentOpen ?? false,
-			lastRun: scryer.lastRun,
-			elapsedMs: scryer.elapsedMs,
-			outputs: cell.outputs?.map(ipynbOutputToRich).filter(Boolean) as RichOutput[] | undefined,
-		};
-	});
-}
-
-function notebookFromCells(cells: NotebookCell[]): IpynbNotebook {
-	return {
-		nbformat: 4,
-		nbformat_minor: 5,
-		metadata: { scryer: { app: "scryer-io", version: 1 } },
-		cells: cells.map((cell) => ({
-			cell_type: cell.kind === "code" ? "code" : "markdown",
-			source: cell.content,
-			metadata: {
-				scryer: {
-					id: cell.id,
-					kind: cell.kind,
-					title: cell.title,
-					lastRun: cell.lastRun,
-					elapsedMs: cell.elapsedMs,
-					ui: { cellOpen: cell.cellOpen, codeOpen: cell.codeOpen, outputOpen: cell.outputOpen, agentOpen: cell.agentOpen },
-				},
-			},
-			...(cell.kind === "code" ? { execution_count: null, outputs: cell.outputs?.map(richOutputToIpynb).filter(Boolean) ?? [] } : {}),
-		})),
-	};
-}
-
-function plainTextData(value: unknown): string {
-	if (Array.isArray(value)) return value.join("");
-	if (typeof value === "string") return value;
-	return JSON.stringify(value, null, 2);
-}
-
-let mermaidInitialized = false;
-
-async function renderMermaid(source: string, id: string): Promise<string> {
-	const mermaid = (await import("mermaid")).default;
-	if (!mermaidInitialized) {
-		mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "dark" });
-		mermaidInitialized = true;
-	}
-	const result = await mermaid.render(`mermaid-${id}-${Date.now()}`, source);
-	return DOMPurify.sanitize(result.svg);
-}
-
-function MermaidView({ source, id }: { source: string; id: string }) {
-	const [svg, setSvg] = useState("");
-	const [error, setError] = useState("");
-	const [loading, setLoading] = useState(false);
-
-	useEffect(() => {
-		let cancelled = false;
-		async function render() {
-			if (!source.trim()) { setSvg(""); setError(""); setLoading(false); return; }
-			setLoading(true);
-			try {
-				const nextSvg = await renderMermaid(source, id);
-				if (!cancelled) { setSvg(nextSvg); setError(""); }
-			} catch (err) {
-				if (!cancelled) { setSvg(""); setError(err instanceof Error ? err.message : String(err)); }
-			} finally {
-				if (!cancelled) setLoading(false);
-			}
-		}
-		render();
-		return () => { cancelled = true; };
-	}, [id, source]);
-
-	if (error) return <pre className="cell-output error">{error}</pre>;
-	if (loading && !svg) return <div className="empty-output">Rendering diagram…</div>;
-	if (!svg) return <div className="empty-output">No diagram rendered.</div>;
-	return <div className="mermaid-output" dangerouslySetInnerHTML={{ __html: svg }} />;
-}
-
-function OutputView({ output }: { output: RichOutput }) {
-	if (output.kind === "status") return null;
-	if (output.kind === "stream") return <pre className={`cell-output ${output.name}`}>{output.text}</pre>;
-	if (output.kind === "error") return <pre className="cell-output error">{[output.ename, output.evalue, ...output.traceback].join("\n")}</pre>;
-	if (output.kind === "execute_result" || output.kind === "display_data") {
-		const html = output.data["text/html"];
-		const png = output.data["image/png"];
-		const svg = output.data["image/svg+xml"];
-		const json = output.data["application/json"];
-		if (typeof html === "string") return <div className="rich-output" dangerouslySetInnerHTML={{ __html: html }} />;
-		if (Array.isArray(html)) return <div className="rich-output" dangerouslySetInnerHTML={{ __html: html.join("") }} />;
-		if (typeof png === "string") return <div className="rich-output"><img src={`data:image/png;base64,${png}`} alt="cell output" /></div>;
-		if (typeof svg === "string") return <div className="rich-output" dangerouslySetInnerHTML={{ __html: svg }} />;
-		if (json) return <pre className="cell-output">{plainTextData(json)}</pre>;
-		return <pre className="cell-output">{plainTextData(output.data["text/plain"] ?? output.data)}</pre>;
-	}
-	return <pre className="cell-output">{plainTextData(output.content)}</pre>;
-}
-
-type SettingsPage = "provider" | "theme";
-type ThemeName = "dark" | "light";
-
 export function App() {
 	const [cells, setCells] = useState<NotebookCell[]>(initialCells);
 	const [selectedId, setSelectedId] = useState(initialCells[1]?.id ?? initialCells[0].id);
+	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 	const [apiStatus, setApiStatus] = useState<"checking" | "online" | "offline">("checking");
 	const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:8888/");
 	const [token, setToken] = useState("");
@@ -306,47 +77,108 @@ export function App() {
 	const [isExecuting, setIsExecuting] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>("provider");
+	const [vastWizardOpen, setVastWizardOpen] = useState(false);
+	const [startupRequirements, setStartupRequirements] = useState("");
+	const [startupOnstart, setStartupOnstart] = useState("");
+	const [startupSaveState, setStartupSaveState] = useState<"saved" | "saving" | "dirty">("saved");
+	const [costPerHour, setCostPerHour] = useState<number | null>(null);
+	const [sessionConnectedAt, setSessionConnectedAt] = useState<number | null>(null);
+	const [costTick, setCostTick] = useState(0);
+	const [dragSrcId, setDragSrcId] = useState<string | null>(null);
+	const [dragOverId, setDragOverId] = useState<string | null>(null);
 	const [themeName, setThemeName] = useState<ThemeName>(() => (localStorage.getItem("scryer-io:theme") as ThemeName) || "dark");
 	const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty">("saved");
 	const [statusMessage, setStatusMessage] = useState("Ready");
-	const [notebookPath, setNotebookPath] = useState("notebook.ipynb");
+	const [notebookPath, setNotebookPath] = useState("");
 	const [dirtyCellIds, setDirtyCellIds] = useState<Set<string>>(new Set());
+
+	const [kernelStatus, setKernelStatus] = useState<KernelStatus>("unknown");
+	const [execCounts, setExecCounts] = useState<Map<string, number>>(new Map());
+	const [runningCellId, setRunningCellId] = useState<string>();
+	const [editingCellId, setEditingCellId] = useState<string>();
+
+	const [findOpen, setFindOpen] = useState(false);
+	const [findQuery, setFindQuery] = useState("");
+	const [replaceQuery, setReplaceQuery] = useState("");
+	const [matchIndex, setMatchIndex] = useState(0);
+
+	const [leftPanel, setLeftPanel] = useState<LeftPanel>(null);
+	const [appMode, setAppMode] = useState<AppMode>("explorer");
+	const [terminalName, setTerminalName] = useState<string>();
+
+	const [snippets, setSnippets] = useState<Snippet[]>([]);
+	const [paletteOpen, setPaletteOpen] = useState(false);
+
+	const [variables, setVariables] = useState<VariableRow[]>([]);
+	const [variablesLoading, setVariablesLoading] = useState(false);
+
+	const [currentFilePath, setCurrentFilePath] = useState<string>();
+	const [fileContent, setFileContent] = useState("");
+	const [fileDirty, setFileDirty] = useState(false);
+	const [fileTree, setFileTree] = useState<FileEntry[]>([]);
+	const [fileDir, setFileDir] = useState("~");
+	const [fileOutputs, setFileOutputs] = useState<RichOutput[]>([]);
+
 	const cellRefs = useRef(new Map<string, HTMLElement>());
-	const editorRefs = useRef(new Map<string, HTMLTextAreaElement>());
+	const editorRefs = useRef(new Map<string, CodeEditorHandle>());
 	const selectedIndex = cells.findIndex((cell) => cell.id === selectedId);
 	const selectedCell = cells[selectedIndex] ?? cells[0];
-	const notebookName = (notebookPath.split(/[\\/]/).pop() ?? "notebook.ipynb").replace(/\.ipynb$/i, "") || "Untitled";
+	const notebookName = notebookPath ? (notebookPath.split(/[\\/]/).pop() ?? "notebook.ipynb").replace(/\.ipynb$/i, "") || "Untitled" : null;
+
+	useEffect(() => {
+		document.title = notebookName ? `Scryer IO · ${notebookName}` : "Scryer IO";
+	}, [notebookName]);
+
+	const toc = useMemo(() => tableOfContents(cells), [cells]);
+	const matchingCellIds = useMemo(() => {
+		if (!findQuery) return [] as string[];
+		const target = findQuery.toLowerCase();
+		return cells.filter((cell) => cell.content.toLowerCase().includes(target) || cell.title.toLowerCase().includes(target)).map((cell) => cell.id);
+	}, [cells, findQuery]);
+	const matchCount = useMemo(() => {
+		if (!findQuery) return 0;
+		return cells.reduce((sum, cell) => sum + countOccurrences(cell.content, findQuery) + countOccurrences(cell.title, findQuery), 0);
+	}, [cells, findQuery]);
 
 	useEffect(() => {
 		localStorage.setItem("scryer-io:theme", themeName);
 	}, [themeName]);
 
+	// Keyboard shortcuts (global)
 	useEffect(() => {
 		const handleKey = (event: globalThis.KeyboardEvent) => {
-			if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === "KeyR") {
+			if ((event.metaKey || event.ctrlKey) && event.code === "KeyK") {
+				event.preventDefault();
+				setPaletteOpen((open) => !open);
+			} else if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === "KeyR") {
 				event.preventDefault();
 				restartKernelAndClearOutputs();
+			} else if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === "KeyK") {
+				event.preventDefault();
+				killKernel();
+			} else if ((event.metaKey || event.ctrlKey) && event.code === "KeyF") {
+				event.preventDefault();
+				setFindOpen(true);
 			} else if ((event.metaKey || event.ctrlKey) && event.code === "KeyS") {
 				event.preventDefault();
 				saveNotebook();
+			} else if (event.code === "Escape" && findOpen) {
+				setFindOpen(false);
 			}
 		};
 		window.addEventListener("keydown", handleKey);
 		return () => window.removeEventListener("keydown", handleKey);
-	}, [cells, providerId, activeSession]);
+	}, [cells, providerId, activeSession, findOpen]);
 
+	// Initial load
 	useEffect(() => {
-		fetch("/api/healthz").then((res) => setApiStatus(res.ok ? "online" : "offline")).catch(() => setApiStatus("offline"));
-		fetch("/api/notebook").then((res) => res.json()).then((json) => {
-			const loadedCells = cellsFromNotebook(json);
-			if (loadedCells.length) {
-				setCells(loadedCells);
-				setSelectedId(loadedCells[0].id);
-				setDirtyCellIds(new Set());
-				setNotebookPath(json.metadata?.scryer?.path ?? "notebook.ipynb");
-				setSaveState("saved");
-			}
+		fetch("/api/startup").then((r) => r.json()).then((d) => {
+			setStartupRequirements(d.requirements ?? "");
+			setStartupOnstart(d.onstart ?? "");
 		}).catch(() => undefined);
+		fetch("/api/healthz").then((res) => setApiStatus(res.ok ? "online" : "offline")).catch(() => setApiStatus("offline"));
+		refreshSnippets();
+		loadFiles(".");
 		fetch("/api/runtime/providers").then((res) => res.json()).then((json) => {
 			const provider = (json.providers ?? [])[0] as SavedProvider | undefined;
 			if (!provider) return;
@@ -362,6 +194,33 @@ export function App() {
 		}).catch(() => undefined);
 	}, []);
 
+	// Autosave every 30s when dirty
+	const autosaveRef = useRef(() => {});
+	autosaveRef.current = () => { if (saveState === "dirty") saveNotebook(); };
+	useEffect(() => {
+		const timer = setInterval(() => autosaveRef.current(), 30000);
+		return () => clearInterval(timer);
+	}, []);
+
+	// Kernel status polling every 2s
+	useEffect(() => {
+		if (!providerId || !activeSession) { setKernelStatus("unknown"); return; }
+		let cancelled = false;
+		const poll = () => {
+			fetch(`/api/runtime/providers/${providerId}/kernel-status?sessionId=${encodeURIComponent(activeSession.id)}`)
+				.then((res) => res.ok ? res.json() : undefined)
+				.then((json) => {
+					if (cancelled || !json) return;
+					const status = json.status as string;
+					setKernelStatus(status === "idle" || status === "busy" || status === "dead" ? status : "unknown");
+				})
+				.catch(() => undefined);
+		};
+		poll();
+		const timer = setInterval(poll, 2000);
+		return () => { cancelled = true; clearInterval(timer); };
+	}, [providerId, activeSession, isExecuting]);
+
 	function setStatus(message: string) {
 		setStatusMessage(message);
 	}
@@ -374,6 +233,12 @@ export function App() {
 	function patchCell(id: string, patch: Partial<NotebookCell>) {
 		markDirty(id);
 		setCells((current) => current.map((cell) => (cell.id === id ? { ...cell, ...patch } : cell)));
+	}
+
+	function clearCellOutput(cellId: string) {
+		patchCell(cellId, { outputs: undefined, outputOpen: false, lastRun: undefined, elapsedMs: undefined });
+		setExecCounts((current) => { const next = new Map(current); next.delete(cellId); return next; });
+		setStatus("Cleared cell output");
 	}
 
 	async function saveNotebook() {
@@ -389,14 +254,12 @@ export function App() {
 		setStatus("Notebook saved");
 	}
 
-	async function openNotebook() {
-		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes and open another notebook?")) return;
-		const path = window.prompt("Open .ipynb path");
-		if (!path) return;
+	async function openNotebook(path: string) {
+		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes?")) return;
 		setStatus("Opening notebook…");
 		const res = await fetch("/api/notebook/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
 		const json = await res.json();
-		if (!res.ok) { setStatus("Open notebook failed"); return window.alert(json.error ?? "Failed to open notebook"); }
+		if (!res.ok) { setStatus("Open failed: " + (json.error ?? "unknown error")); return; }
 		const loadedCells = cellsFromNotebook(json);
 		setNotebookPath(json.metadata?.scryer?.path ?? path);
 		setCells(loadedCells.length ? loadedCells : initialCells);
@@ -404,34 +267,47 @@ export function App() {
 		setDirtyCellIds(new Set());
 		setSaveState("saved");
 		setStatus(`Opened ${path}`);
+		setAppMode("notebook");
 	}
 
 	async function newNotebook() {
-		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes and create a new notebook?")) return;
-		const path = window.prompt("New .ipynb path");
-		if (!path) return;
+		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes?")) return;
+		const base = fileDir === "." ? "" : fileDir + "/";
+		const path = `${base}Untitled-${Date.now()}.ipynb`;
 		setStatus("Creating notebook…");
 		const res = await fetch("/api/notebook/new", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
 		const json = await res.json();
-		if (!res.ok) { setStatus("Create notebook failed"); return window.alert(json.error ?? "Failed to create notebook"); }
+		if (!res.ok) { setStatus("Create failed: " + (json.error ?? "unknown error")); return; }
 		setNotebookPath(json.metadata?.scryer?.path ?? path);
 		setCells(initialCells);
 		setSelectedId(initialCells[0].id);
 		setDirtyCellIds(new Set(initialCells.map((cell) => cell.id)));
 		setSaveState("dirty");
 		setStatus(`Created ${path}`);
+		setAppMode("notebook");
 	}
 
 	async function closeNotebook() {
-		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes and close this notebook?")) return;
-		setStatus("Closing notebook…");
+		if (dirtyCellIds.size && !window.confirm("Discard unsaved changes?")) return;
 		await fetch("/api/notebook/close", { method: "POST" });
-		setNotebookPath("notebook.ipynb");
+		setNotebookPath("");
 		setCells(initialCells);
 		setSelectedId(initialCells[0].id);
 		setDirtyCellIds(new Set());
 		setSaveState("saved");
 		setStatus("Notebook closed");
+		setAppMode("explorer");
+		loadFiles(fileDir);
+	}
+
+	function closeFile() {
+		if (fileDirty && !window.confirm("Discard unsaved file changes?")) return;
+		setCurrentFilePath(undefined);
+		setFileContent("");
+		setFileDirty(false);
+		setFileOutputs([]);
+		setAppMode("explorer");
+		loadFiles(fileDir);
 	}
 
 	function moveSelected(delta: -1 | 1) {
@@ -492,25 +368,88 @@ export function App() {
 		else connectProvider();
 	}
 
-	async function executeCell(cell: NotebookCell) {
-		if (cell.kind !== "code") {
-			setStatus(`Rendered ${cell.title || "cell"}`);
-			patchCell(cell.id, { outputOpen: true, lastRun: nowLabel(), elapsedMs: 0 });
-			return;
+	async function handleVastConnected(newProviderId: string, label: string, cost?: number) {
+		setProviderId(newProviderId);
+		setStatus(`Connected to ${label}`);
+		if (cost) { setCostPerHour(cost); setSessionConnectedAt(Date.now()); }
+		try {
+			const r = await fetch(`/api/runtime/providers/${newProviderId}/kernelspecs`);
+			const d = await r.json();
+			if (r.ok && Array.isArray(d.kernelSpecs)) setKernelSpecs(d.kernelSpecs);
+		} catch { /* best-effort */ }
+	}
+
+	useEffect(() => {
+		if (!costPerHour) return;
+		const id = setInterval(() => setCostTick((t) => t + 1), 1000);
+		return () => clearInterval(id);
+	}, [costPerHour]);
+
+	function handleDragStart(cellId: string) { setDragSrcId(cellId); }
+	function handleDragOver(e: React.DragEvent, cellId: string) { e.preventDefault(); setDragOverId(cellId); }
+	function handleDragEnd() { setDragSrcId(null); setDragOverId(null); }
+	function handleDrop(e: React.DragEvent, targetId: string) {
+		e.preventDefault();
+		if (dragSrcId && dragSrcId !== targetId) {
+			setCells((prev) => {
+				const next = [...prev];
+				const si = next.findIndex((c) => c.id === dragSrcId);
+				const ti = next.findIndex((c) => c.id === targetId);
+				const [cell] = next.splice(si, 1);
+				next.splice(ti, 0, cell);
+				return next;
+			});
 		}
-		if (!providerId) {
-			setStatus("Connect a Jupyter provider before executing code");
-			patchCell(cell.id, { outputOpen: true, outputs: [{ kind: "stream", name: "stderr", text: "Connect a Jupyter provider before executing code." }] });
-			return;
+		setDragSrcId(null);
+		setDragOverId(null);
+	}
+
+	function exportToPy() {
+		const lines: string[] = [];
+		for (const cell of cells) {
+			if (cell.kind === "code") {
+				lines.push(`# %% ${cell.title || "Cell"}`);
+				lines.push(cell.content);
+				lines.push("");
+			} else if (cell.kind === "markdown") {
+				lines.push("# %% [markdown]");
+				lines.push(...cell.content.split("\n").map((l) => `# ${l}`));
+				lines.push("");
+			}
 		}
-		setStatus(`Running ${cell.title || "cell"}…`);
-		markDirty(cell.id);
-		setCells((current) => current.map((item) => item.id === cell.id ? { ...item, outputOpen: true, outputs: [] } : item));
-		const stamp = nowLabel();
+		const blob = new Blob([lines.join("\n")], { type: "text/x-python" });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = (notebookPath.split("/").pop() ?? "notebook").replace(/\.ipynb$/i, "") + ".py";
+		a.click();
+		URL.revokeObjectURL(url);
+	}
+
+	async function switchKernel(name: string) {
+		setKernelName(name);
+		if (!providerId) return;
+		setStatus(`Switching kernel to ${name}…`);
+		try {
+			const res = await fetch(`/api/runtime/providers/${providerId}/sessions`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ path: `scryer-io-${Date.now()}.ipynb`, kernelName: name }),
+			});
+			const json = await res.json();
+			if (!res.ok) throw new Error(json.error ?? "Failed to switch kernel");
+			setActiveSession(json.session);
+			setStatus(`Started ${name} kernel`);
+		} catch (err: any) {
+			setStatus(err?.message ?? "Kernel switch failed");
+		}
+	}
+
+	async function streamExecute(code: string, onOutput: (output: RichOutput) => void, onDone: (event: any) => void) {
 		const res = await fetch(`/api/runtime/providers/${providerId}/execute/stream`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ code: cell.content, sessionId: activeSession?.id, kernelName: kernelName || undefined }),
+			body: JSON.stringify({ code, sessionId: activeSession?.id, kernelName: kernelName || undefined }),
 		});
 		if (!res.ok || !res.body) {
 			const json = await res.json().catch(() => undefined);
@@ -520,15 +459,9 @@ export function App() {
 		const decoder = new TextDecoder();
 		let buffer = "";
 		const handleEvent = (event: any) => {
-			if (event.type === "output") {
-				setCells((current) => current.map((item) => item.id === cell.id ? { ...item, outputs: appendRichOutput(item.outputs ?? [], event.output as RichOutput) } : item));
-			} else if (event.type === "done") {
-				setActiveSession(event.session);
-				setCells((current) => current.map((item) => item.id === cell.id ? { ...item, lastRun: stamp, elapsedMs: event.elapsedMs, outputOpen: true } : item));
-				setStatus(`Finished ${cell.title || "cell"} in ${event.elapsedMs}ms`);
-			} else if (event.type === "error") {
-				throw new Error(event.error ?? "Execution failed");
-			}
+			if (event.type === "output") onOutput(event.output as RichOutput);
+			else if (event.type === "done") onDone(event);
+			else if (event.type === "error") throw new Error(event.error ?? "Execution failed");
 		};
 		while (true) {
 			const { value, done } = await reader.read();
@@ -541,11 +474,54 @@ export function App() {
 		if (buffer.trim()) handleEvent(JSON.parse(buffer));
 	}
 
+	async function executeCell(cell: NotebookCell) {
+		if (cell.kind !== "code") {
+			setStatus(`Rendered ${cell.title || "cell"}`);
+			patchCell(cell.id, { outputOpen: true, lastRun: nowLabel(), elapsedMs: 0 });
+			return;
+		}
+		if (!providerId) {
+			setStatus("Connect a Jupyter provider before executing code");
+			patchCell(cell.id, { outputOpen: true, outputs: [{ kind: "stream", name: "stderr", text: "Connect a Jupyter provider before executing code." }] });
+			return;
+		}
+		setStatus(`Running ${cell.title || "cell"}…`);
+		setRunningCellId(cell.id);
+		markDirty(cell.id);
+		setCells((current) => current.map((item) => item.id === cell.id ? { ...item, outputOpen: true, outputs: [] } : item));
+		const stamp = nowLabel();
+		try {
+			await streamExecute(
+				cell.content,
+				(output) => setCells((current) => current.map((item) => item.id === cell.id ? { ...item, outputs: appendRichOutput(item.outputs ?? [], output) } : item)),
+				(event) => {
+					setActiveSession(event.session);
+					setCells((current) => current.map((item) => item.id === cell.id ? { ...item, lastRun: stamp, elapsedMs: event.elapsedMs, outputOpen: true } : item));
+					if (typeof event.executionCount === "number") {
+						setExecCounts((current) => new Map(current).set(cell.id, event.executionCount));
+					}
+					setStatus(`Finished ${cell.title || "cell"} in ${event.elapsedMs}ms`);
+				},
+			);
+		} finally {
+			setRunningCellId(undefined);
+		}
+	}
+
 	async function executeCells(targetCells: NotebookCell[]) {
 		setIsExecuting(true);
 		try { for (const cell of targetCells) await executeCell(cell); }
 		catch (err: any) { setStatus(err?.message ?? "Execution failed"); if (selectedCell) patchCell(selectedCell.id, { outputOpen: true, outputs: [{ kind: "stream", name: "stderr", text: err?.message ?? String(err) }] }); }
-		finally { setIsExecuting(false); }
+		finally { setIsExecuting(false); setRunningCellId(undefined); }
+	}
+
+	function runSelection() {
+		if (selectedIds.size > 1) {
+			const ordered = cells.filter((cell) => selectedIds.has(cell.id));
+			executeCells(ordered);
+		} else if (selectedCell) {
+			executeCells([selectedCell]);
+		}
 	}
 
 	async function restartKernel() {
@@ -565,6 +541,24 @@ export function App() {
 		finally { setIsExecuting(false); }
 	}
 
+	async function killKernel() {
+		if (!providerId || !activeSession) { setStatus("No active kernel to shut down"); return; }
+		if (!window.confirm("Shut down the kernel? Session state will be lost.")) return;
+		setStatus("Shutting down kernel…");
+		try {
+			const res = await fetch(`/api/runtime/providers/${providerId}/shutdown`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ sessionId: activeSession.id }),
+			});
+			const json = await res.json();
+			if (!res.ok) throw new Error(json.error ?? "Shutdown failed");
+			setActiveSession(undefined);
+			setKernelStatus("dead");
+			setStatus("Kernel shut down");
+		} catch (err: any) { setStatus(err?.message ?? "Shutdown failed"); console.error(err); }
+	}
+
 	async function interruptKernel() {
 		if (!providerId || !activeSession) { setStatus("No active kernel to interrupt"); return; }
 		setStatus("Interrupting kernel…");
@@ -578,10 +572,30 @@ export function App() {
 		} finally { setIsExecuting(false); }
 	}
 
+	async function loadVariables() {
+		if (!providerId) { setStatus("Connect a provider to inspect variables"); return; }
+		setVariablesLoading(true);
+		setStatus("Loading variables…");
+		try {
+			const res = await fetch(`/api/runtime/providers/${providerId}/variables`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ sessionId: activeSession?.id, kernelName: kernelName || undefined }),
+			});
+			const json = await res.json();
+			if (!res.ok) throw new Error(json.error ?? "Failed to load variables");
+			setVariables(json.variables ?? []);
+			setStatus(`Loaded ${json.variables?.length ?? 0} variables`);
+		} catch (err: any) {
+			setStatus(err?.message ?? "Failed to load variables");
+		} finally { setVariablesLoading(false); }
+	}
+
 	function clearOutputs() {
 		markDirty();
 		setDirtyCellIds(new Set(cells.map((cell) => cell.id)));
 		setCells((current) => current.map((cell) => ({ ...cell, outputs: undefined, outputOpen: false, lastRun: undefined, elapsedMs: undefined })));
+		setExecCounts(new Map());
 		setStatus("Cleared all outputs");
 	}
 
@@ -600,6 +614,7 @@ export function App() {
 			markDirty();
 			setDirtyCellIds(new Set(cells.map((cell) => cell.id)));
 			setCells((current) => current.map((cell) => ({ ...cell, outputs: undefined, outputOpen: false, lastRun: undefined, elapsedMs: undefined })));
+			setExecCounts(new Map());
 			setStatus("Kernel restarted; outputs cleared");
 		} catch (err: any) {
 			setStatus(err?.message ?? "Restart failed");
@@ -645,14 +660,83 @@ export function App() {
 		focusCell(id);
 	}
 
+	async function refreshSnippets() {
+		try { setSnippets(await listSnippets()); }
+		catch (err: any) { setStatus(err?.message ?? "Failed to load snippets"); }
+	}
+
+	async function saveCellsAsSnippet(name: string) {
+		const targets = selectedIds.size > 1 ? cells.filter((cell) => selectedIds.has(cell.id)) : selectedCell ? [selectedCell] : [];
+		if (!targets.length) { setStatus("No cell selected to save"); return; }
+		try {
+			await createSnippet({ name, cells: targets.map((cell) => ({ kind: cell.kind, title: cell.title, content: cell.content })) });
+			await refreshSnippets();
+			setStatus(`Saved snippet “${name}”`);
+		} catch (err: any) {
+			setStatus(err?.message ?? "Failed to save snippet");
+		}
+	}
+
+	// The single chokepoint for snippet insertion. Today it splices `ready` cells
+	// directly; once the overlay/approve machinery lands it swaps to enqueueing an
+	// `insert` patch — and nothing else in the app has to change.
+	function insertSnippet(snippet: Snippet, anchorId = selectedId) {
+		if (!snippet.cells.length) return;
+		const stamp = Date.now();
+		const inserted: NotebookCell[] = snippet.cells.map((source, index) => ({
+			id: `cell-${stamp}-${index}`,
+			kind: source.kind,
+			title: source.title || "Untitled",
+			content: source.content,
+			cellOpen: true,
+			codeOpen: true,
+			agentOpen: false,
+			outputOpen: source.kind !== "code",
+		}));
+		setCells((current) => {
+			const anchorIndex = current.findIndex((item) => item.id === anchorId);
+			const insertAt = anchorIndex >= 0 ? anchorIndex + 1 : current.length;
+			const next = [...current];
+			next.splice(insertAt, 0, ...inserted);
+			return next;
+		});
+		setSaveState("dirty");
+		setDirtyCellIds((ids) => { const next = new Set(ids); for (const cell of inserted) next.add(cell.id); return next; });
+		setStatus(`Inserted snippet “${snippet.name}”`);
+		setAppMode("notebook");
+		focusCell(inserted[0].id);
+	}
+
 	function focusCell(id: string) {
 		setSelectedId(id);
-		requestAnimationFrame(() => cellRefs.current.get(id)?.focus());
+		setSelectedIds(new Set());
+		setEditingCellId(undefined);
+		requestAnimationFrame(() => {
+			const el = cellRefs.current.get(id);
+			el?.focus();
+			el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+		});
+	}
+
+	function scrollToCell(id: string) {
+		setSelectedId(id);
+		requestAnimationFrame(() => cellRefs.current.get(id)?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
 	}
 
 	function focusEditor(id: string) {
+		setEditingCellId(id);
 		patchCell(id, { cellOpen: true, codeOpen: true });
 		requestAnimationFrame(() => editorRefs.current.get(id)?.focus());
+	}
+
+	async function executeAndAdvance(cell: NotebookCell) {
+		await executeCells([cell]);
+		const idx = cells.findIndex((c) => c.id === cell.id);
+		if (idx >= 0 && idx < cells.length - 1) {
+			focusCell(cells[idx + 1].id);
+		} else {
+			addCell("below", cell.id);
+		}
 	}
 
 	function collapseCellFully(cell: NotebookCell) {
@@ -660,9 +744,29 @@ export function App() {
 		focusCell(cell.id);
 	}
 
+	function handleCellClick(event: ReactMouseLikeEvent, cell: NotebookCell, index: number) {
+		if (event.shiftKey) {
+			const anchorIndex = selectedIndex >= 0 ? selectedIndex : index;
+			const [lo, hi] = anchorIndex < index ? [anchorIndex, index] : [index, anchorIndex];
+			const range = new Set(cells.slice(lo, hi + 1).map((item) => item.id));
+			setSelectedIds(range);
+			setSelectedId(cell.id);
+		} else if (event.metaKey || event.ctrlKey) {
+			setSelectedIds((current) => {
+				const next = new Set(current);
+				if (next.has(cell.id)) next.delete(cell.id); else next.add(cell.id);
+				if (selectedId) next.add(selectedId);
+				return next;
+			});
+			setSelectedId(cell.id);
+		} else {
+			setSelectedIds(new Set());
+			setSelectedId(cell.id);
+		}
+	}
+
 	function handleCellKeyCapture(event: KeyboardEvent, cell: NotebookCell) {
-		if (isCommand(event, "Escape")) { event.preventDefault(); event.stopPropagation(); collapseCellFully(cell); }
-		else if (isCommand(event, "KeyS")) { event.preventDefault(); event.stopPropagation(); saveNotebook(); }
+		if (isCommand(event, "KeyS")) { event.preventDefault(); event.stopPropagation(); saveNotebook(); }
 	}
 
 	function handleWorkbenchKeyCapture(event: KeyboardEvent) {
@@ -677,111 +781,402 @@ export function App() {
 
 	function handleCellKey(event: KeyboardEvent, cell: NotebookCell) {
 		const target = event.target as HTMLElement;
-		const isFormTarget = ["TEXTAREA", "INPUT", "SELECT"].includes(target.tagName);
-		if (isCommand(event, "Enter")) { event.preventDefault(); event.stopPropagation(); setSelectedId(cell.id); executeCells([cell]); }
-		else if (isCommand(event, "KeyS")) { event.preventDefault(); event.stopPropagation(); saveNotebook(); }
-		else if (isCommand(event, "KeyA")) { event.preventDefault(); event.stopPropagation(); addCell("above", cell.id); }
-		else if (isCommand(event, "KeyB")) { event.preventDefault(); event.stopPropagation(); addCell("below", cell.id); }
-		else if (!isFormTarget && event.code === "ArrowUp") { event.preventDefault(); const prev = cells[Math.max(0, cells.findIndex((item) => item.id === cell.id) - 1)]; if (prev) focusCell(prev.id); }
-		else if (!isFormTarget && event.code === "ArrowDown") { event.preventDefault(); const next = cells[Math.min(cells.length - 1, cells.findIndex((item) => item.id === cell.id) + 1)]; if (next) focusCell(next.id); }
-		else if (!isFormTarget && event.code === "Enter") { event.preventDefault(); focusEditor(cell.id); }
+		const inEditor = Boolean(target.closest(".cm-editor"));
+		const inForm = ["TEXTAREA", "INPUT", "SELECT"].includes(target.tagName);
+		const inText = inEditor || inForm;
+
+		// Bindings that fire even when editor is focused
+		if (isCommand(event, "KeyS")) { event.preventDefault(); event.stopPropagation(); saveNotebook(); return; }
+		// Only run from article-level if CodeMirror didn't already handle it (it calls preventDefault but not stopPropagation)
+		if (isCommand(event, "Enter") && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); executeCells([cell]); return; }
+		if (!inText && event.shiftKey && event.code === "Enter" && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); executeAndAdvance(cell); return; }
+
+		// Command-mode only bindings (not when editor is focused)
+		if (inText) return;
+
+		const cellIndex = cells.findIndex((c) => c.id === cell.id);
+
+		if (event.code === "ArrowUp" || event.code === "KeyK") {
+			event.preventDefault();
+			if (event.shiftKey) {
+				// Extend selection upward
+				const lo = Math.max(0, cellIndex - 1);
+				const anchor = selectedIndex >= 0 ? selectedIndex : cellIndex;
+				const [a, b] = anchor < lo ? [anchor, lo] : [lo, anchor];
+				setSelectedIds(new Set(cells.slice(a, b + 1).map((c) => c.id)));
+				setSelectedId(cells[lo].id);
+			} else {
+				const prev = cells[Math.max(0, cellIndex - 1)];
+				if (prev) focusCell(prev.id);
+			}
+			return;
+		}
+		if (event.code === "ArrowDown" || event.code === "KeyJ") {
+			event.preventDefault();
+			if (event.shiftKey) {
+				const hi = Math.min(cells.length - 1, cellIndex + 1);
+				const anchor = selectedIndex >= 0 ? selectedIndex : cellIndex;
+				const [a, b] = anchor < hi ? [anchor, hi] : [hi, anchor];
+				setSelectedIds(new Set(cells.slice(a, b + 1).map((c) => c.id)));
+				setSelectedId(cells[hi].id);
+			} else {
+				const next = cells[Math.min(cells.length - 1, cellIndex + 1)];
+				if (next) focusCell(next.id);
+			}
+			return;
+		}
+		if (event.code === "Enter") { event.preventDefault(); focusEditor(cell.id); return; }
+		if (event.shiftKey && event.code === "Enter") { event.preventDefault(); executeAndAdvance(cell); return; }
+		if (event.code === "Escape") { event.preventDefault(); collapseCellFully(cell); return; }
+		if (event.code === "KeyA" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); addCell("above", cell.id); return; }
+		if (event.code === "KeyB" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); addCell("below", cell.id); return; }
+		if (event.code === "KeyM") { event.preventDefault(); patchCell(cell.id, { kind: "markdown", outputOpen: true }); return; }
+		if (event.code === "KeyY") { event.preventDefault(); patchCell(cell.id, { kind: "code" }); return; }
+		if (event.code === "KeyO") { event.preventDefault(); patchCell(cell.id, { outputOpen: !cell.outputOpen }); return; }
+		if (event.code === "Delete" || event.code === "Backspace") { event.preventDefault(); deleteSelected(); return; }
+		if ((event.metaKey || event.ctrlKey) && event.code === "KeyX") { event.preventDefault(); deleteSelected(); return; }
 	}
 
-	function handleEditorKey(event: KeyboardEvent, cell: NotebookCell) {
-		if (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.altKey) {
-			event.preventDefault();
-			event.stopPropagation();
-			const editor = event.currentTarget;
-			const start = editor.selectionStart;
-			const end = editor.selectionEnd;
-			const nextContent = `${cell.content.slice(0, start)}\t${cell.content.slice(end)}`;
-			patchCell(cell.id, { content: nextContent });
-			requestAnimationFrame(() => {
-				editor.selectionStart = start + 1;
-				editor.selectionEnd = start + 1;
-			});
-		} else if (event.code === "Escape" && !event.metaKey && !event.ctrlKey) { event.preventDefault(); event.stopPropagation(); focusCell(cell.id); }
-		else handleCellKey(event, cell);
+	// Find & replace
+	function gotoMatch(delta: number) {
+		if (!matchingCellIds.length) return;
+		const next = (matchIndex + delta + matchingCellIds.length) % matchingCellIds.length;
+		setMatchIndex(next);
+		scrollToCell(matchingCellIds[next]);
 	}
+
+	function replaceCurrent() {
+		if (!findQuery || !matchingCellIds.length) return;
+		const cellId = matchingCellIds[Math.min(matchIndex, matchingCellIds.length - 1)];
+		const cell = cells.find((item) => item.id === cellId);
+		if (!cell) return;
+		const lower = cell.content.toLowerCase();
+		const idx = lower.indexOf(findQuery.toLowerCase());
+		if (idx >= 0) {
+			patchCell(cellId, { content: cell.content.slice(0, idx) + replaceQuery + cell.content.slice(idx + findQuery.length) });
+			setStatus("Replaced match");
+		}
+	}
+
+	function replaceAll() {
+		if (!findQuery) return;
+		const re = new RegExp(findQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+		let replaced = 0;
+		setCells((current) => current.map((cell) => {
+			const nextContent = cell.content.replace(re, () => { replaced += 1; return replaceQuery; });
+			const nextTitle = cell.title.replace(re, replaceQuery);
+			if (nextContent !== cell.content || nextTitle !== cell.title) {
+				setDirtyCellIds((ids) => new Set(ids).add(cell.id));
+				return { ...cell, content: nextContent, title: nextTitle };
+			}
+			return cell;
+		}));
+		setSaveState("dirty");
+		setStatus(`Replaced ${replaced} occurrence${replaced === 1 ? "" : "s"}`);
+	}
+
+	function cycleLeftPanel() {
+		setLeftPanel((current) => {
+			const order: LeftPanel[] = ["toc", "files", "variables", null];
+			const idx = order.indexOf(current);
+			const next = order[(idx + 1) % order.length];
+			if (next === "files") loadFiles(".");
+			if (next === "variables") loadVariables();
+			return next;
+		});
+	}
+
+	// File browser / IDE
+	async function loadFiles(path: string) {
+		try {
+			const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
+			const json = await res.json();
+			if (!res.ok) throw new Error(json.error ?? "Failed to list files");
+			setFileTree(json.entries ?? []);
+			setFileDir(json.path ?? path);
+		} catch (err: any) {
+			setStatus(err?.message ?? "Failed to list files");
+		}
+	}
+
+	async function openFile(entry: FileEntry) {
+		if (entry.isDir) { loadFiles(entry.path); return; }
+		if (entry.path.endsWith(".ipynb")) { await openNotebook(entry.path); return; }
+		if (fileDirty && !window.confirm("Discard unsaved file changes?")) return;
+		try {
+			const res = await fetch(`/api/files/read?path=${encodeURIComponent(entry.path)}`);
+			const json = await res.json();
+			if (!res.ok) throw new Error(json.error ?? "Failed to read file");
+			setCurrentFilePath(json.path);
+			setFileContent(json.content ?? "");
+			setFileDirty(false);
+			setFileOutputs([]);
+			setAppMode("file");
+			setStatus(`Opened ${json.path}`);
+		} catch (err: any) {
+			setStatus(err?.message ?? "Failed to read file");
+		}
+	}
+
+	async function saveFile() {
+		if (!currentFilePath) return;
+		try {
+			const res = await fetch("/api/files/write", {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ path: currentFilePath, content: fileContent }),
+			});
+			if (!res.ok) { const json = await res.json().catch(() => undefined); throw new Error(json?.error ?? "Failed to save file"); }
+			setFileDirty(false);
+			setStatus(`Saved ${currentFilePath}`);
+		} catch (err: any) {
+			setStatus(err?.message ?? "Failed to save file");
+		}
+	}
+
+	async function runFile() {
+		if (!providerId) { setStatus("Connect a provider to run files"); return; }
+		setIsExecuting(true);
+		setFileOutputs([]);
+		setStatus(`Running ${currentFilePath ?? "file"}…`);
+		try {
+			await streamExecute(
+				fileContent,
+				(output) => setFileOutputs((current) => appendRichOutput(current, output)),
+				(event) => { setActiveSession(event.session); setStatus(`Finished file in ${event.elapsedMs}ms`); },
+			);
+		} catch (err: any) {
+			setFileOutputs((current) => [...current, { kind: "stream", name: "stderr", text: err?.message ?? String(err) }]);
+			setStatus(err?.message ?? "File execution failed");
+		} finally { setIsExecuting(false); }
+	}
+
+	const fileLanguage: "python" | "markdown" = currentFilePath?.endsWith(".md") ? "markdown" : "python";
+	const sidebarOpen = leftPanel !== null && appMode === "notebook";
+
+	const paletteCommands: PaletteCommand[] = [
+		{ id: "save-notebook", label: "Save notebook", hint: "⌘S", icon: faFloppyDisk, run: saveNotebook },
+		{ id: "new-notebook", label: "New notebook", icon: faPlus, run: newNotebook },
+		{ id: "run-selection", label: "Run selected cell", hint: "⌘↵", icon: faPlay, run: runSelection },
+		{ id: "restart-kernel", label: "Restart kernel", icon: faRotateRight, run: restartKernel },
+		{ id: "clear-outputs", label: "Clear all outputs", icon: faEraser, run: clearOutputs },
+		{ id: "find", label: "Find & replace", hint: "⌘F", icon: faMagnifyingGlass, run: () => setFindOpen(true) },
+		{ id: "theme", label: `Switch to ${themeName === "dark" ? "light" : "dark"} theme`, icon: faGear, run: () => setThemeName(themeName === "dark" ? "light" : "dark") },
+		{ id: "settings", label: "Open settings", icon: faGear, run: () => setSettingsOpen(true) },
+	];
 
 	return (
 		<div className="app-shell" data-theme={themeName} onKeyDownCapture={handleWorkbenchKeyCapture}>
 			<header className="topbar">
-				<div className="brand-block"><div className="eyebrow">Scryer Io</div><h1 title={notebookPath}>{notebookName}</h1></div>
-				<div className="provider-pill"><FontAwesomeIcon icon={faCircleNodes} /><span>API {apiStatus}</span><strong>{providerId ? `Jupyter ${providerId}` : "Jupyter disconnected"}</strong></div>
+				<div className="brand-block"><h1 title={notebookPath}>Scryer IO{notebookName ? ` · ${notebookName}` : ""}</h1></div>
+				<div className="topbar-right">
+				<button className="ghost-button icon-button theme-toggle" title="Settings" aria-label="Settings" onClick={() => setSettingsOpen(true)}><FontAwesomeIcon icon={faGear} /></button>
+				<button className="ghost-button theme-toggle" title={`Switch to ${themeName === "dark" ? "light" : "dark"} theme`} onClick={() => setThemeName(themeName === "dark" ? "light" : "dark")} aria-label="Toggle theme">{themeName === "dark" ? "☀" : "◑"}</button>
+				</div>
 			</header>
 
-			<section className="toolbar" aria-label="Notebook actions">
-				<button className="ghost-button icon-button" title="New notebook" aria-label="New notebook" onClick={newNotebook} disabled={isExecuting}><FontAwesomeIcon icon={faFile} /></button>
-				<button className="ghost-button icon-button" title="Open notebook" aria-label="Open notebook" onClick={openNotebook} disabled={isExecuting}><FontAwesomeIcon icon={faFolderOpen} /></button>
-				<button className="ghost-button icon-button" title="Save notebook" aria-label="Save notebook" onClick={saveNotebook} disabled={saveState === "saving"}><FontAwesomeIcon icon={faFloppyDisk} /></button>
-				<button className="ghost-button icon-button" title="Close notebook" aria-label="Close notebook" onClick={closeNotebook} disabled={isExecuting}><FontAwesomeIcon icon={faXmark} /></button>
-				<div className="toolbar-divider" />
-				<button className="ghost-button icon-button" title="Restart kernel" aria-label="Restart kernel" onClick={restartKernel} disabled={isExecuting || !activeSession}><FontAwesomeIcon icon={faRotateRight} /></button>
-				<button className="ghost-button icon-button" title="Execute all up to here" aria-label="Execute all up to here" onClick={() => executeCells(cells.slice(0, selectedIndex + 1))} disabled={isExecuting}><FontAwesomeIcon icon={faBolt} /></button>
-				<button className="ghost-button icon-button" title="Execute all from here" aria-label="Execute all from here" onClick={() => executeCells(cells.slice(selectedIndex))} disabled={isExecuting}><FontAwesomeIcon icon={faRotateRight} /></button>
-				<button className="ghost-button icon-button" title="Clear outputs" aria-label="Clear outputs" onClick={clearOutputs} disabled={isExecuting}><FontAwesomeIcon icon={faEraser} /></button>
-				<div className="toolbar-divider" />
-				<button className="ghost-button icon-button" title="Move cell up" aria-label="Move cell up" onClick={() => moveSelected(-1)} disabled={selectedIndex <= 0 || isExecuting}><FontAwesomeIcon icon={faArrowUp} /></button>
-				<button className="ghost-button icon-button" title="Move cell down" aria-label="Move cell down" onClick={() => moveSelected(1)} disabled={selectedIndex < 0 || selectedIndex >= cells.length - 1 || isExecuting}><FontAwesomeIcon icon={faArrowDown} /></button>
-				<button className="ghost-button icon-button" title="Duplicate cell" aria-label="Duplicate cell" onClick={duplicateSelected} disabled={isExecuting}><FontAwesomeIcon icon={faClone} /></button>
-				<button className="ghost-button icon-button" title="Delete cell" aria-label="Delete cell" onClick={deleteSelected} disabled={isExecuting || cells.length <= 1}><FontAwesomeIcon icon={faTrash} /></button>
-				<button className="primary-button icon-button" title="Execute cell" aria-label="Execute cell" onClick={() => selectedCell && executeCells([selectedCell])} disabled={isExecuting}><FontAwesomeIcon icon={faPlay} /></button>
-				<button className="ghost-button icon-button" title="Interrupt kernel" aria-label="Interrupt kernel" onClick={interruptKernel} disabled={!activeSession}><FontAwesomeIcon icon={faStop} /></button>
-				<div className="toolbar-spacer" />
-				<button className="ghost-button icon-button" title="Settings" aria-label="Settings" onClick={() => setSettingsOpen(true)}><FontAwesomeIcon icon={faGear} /></button>
-				<button className="success-button icon-button" title="Add cell below" aria-label="Add cell below" onClick={() => addCell("below")}><FontAwesomeIcon icon={faPlus} /></button>
-			</section>
+			<div className="app-mode-tabs" role="tablist" aria-label="Workspace mode">
+				<button role="tab" aria-selected={appMode === "explorer"} className={appMode === "explorer" ? "active" : ""} onClick={() => { setAppMode("explorer"); loadFiles(fileDir); }}><FontAwesomeIcon icon={faFolderOpen} /> Explorer</button>
+				{notebookName && <button role="tab" aria-selected={appMode === "notebook"} className={`app-tab ${appMode === "notebook" ? "active" : ""}`} onClick={() => setAppMode("notebook")}><FontAwesomeIcon icon={faFile} />{notebookName}<span className="tab-close-btn" onClick={(e) => { e.stopPropagation(); closeNotebook(); }}><FontAwesomeIcon icon={faXmark} /></span></button>}
+				{currentFilePath && <button role="tab" aria-selected={appMode === "file"} className={`app-tab ${appMode === "file" ? "active" : ""}`} onClick={() => setAppMode("file")}><FontAwesomeIcon icon={faFile} />{currentFilePath.split("/").pop()}<span className="tab-close-btn" onClick={(e) => { e.stopPropagation(); closeFile(); }}><FontAwesomeIcon icon={faXmark} /></span></button>}
+				<button role="tab" aria-selected={appMode === "snippets"} className={appMode === "snippets" ? "active" : ""} onClick={() => { setAppMode("snippets"); refreshSnippets(); }}><FontAwesomeIcon icon={faLayerGroup} /> Snippets</button>
+				<button role="tab" aria-selected={appMode === "terminal"} className={appMode === "terminal" ? "active" : ""} onClick={() => setAppMode("terminal")}><FontAwesomeIcon icon={faTerminal} /> Terminal</button>
+			</div>
 
-			{settingsOpen && (
-				<div className="settings-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}>
-					<section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onClick={(event) => event.stopPropagation()}>
-						<header className="settings-header"><div><div className="eyebrow">Settings</div><h2 id="settings-title">{settingsPage === "provider" ? "Provider" : "Theme"}</h2></div><button className="ghost-button icon-button" title="Close settings" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><FontAwesomeIcon icon={faXmark} /></button></header>
-						<div className="settings-body">
-							<nav className="settings-nav" aria-label="Settings pages"><button className={settingsPage === "provider" ? "active" : ""} type="button" onClick={() => setSettingsPage("provider")}>Provider</button><button className={settingsPage === "theme" ? "active" : ""} type="button" onClick={() => setSettingsPage("theme")}>Theme</button></nav>
-							{settingsPage === "provider" ? <div className="settings-page">
-								<p className="settings-copy">Connect this Scryer Io server to a Jupyter endpoint. Values are saved on the backend for every browser using this server.</p>
-								<label><span>Jupyter URL</span><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="http://127.0.0.1:8888/" /></label>
-								<label><span>Token</span><input value={token} onChange={(event) => setToken(event.target.value)} placeholder="paste token" type="password" /></label>
-								<label><span>Kernel</span><input value={kernelName} onChange={(event) => setKernelName(event.target.value)} list="kernel-specs" placeholder="python3" /><datalist id="kernel-specs">{kernelSpecs.map((spec) => <option key={spec.name} value={spec.name}>{spec.displayName}</option>)}</datalist></label>
-								<div className="settings-actions"><button className={providerId ? "success-button" : "primary-button"} onClick={toggleProviderConnection} disabled={isConnecting || apiStatus !== "online"}><FontAwesomeIcon icon={faCircleNodes} /> {isConnecting ? "Working…" : providerId ? "Connected" : "Connect"}</button></div>
-							</div> : <div className="settings-page">
-								<p className="settings-copy">Choose the Scryer Io interface theme. This preference is stored in this browser.</p>
-								<div className="theme-options"><button className={themeName === "dark" ? "theme-option active" : "theme-option"} onClick={() => setThemeName("dark")}>One dark</button><button className={themeName === "light" ? "theme-option active" : "theme-option"} onClick={() => setThemeName("light")}>One light</button></div>
-							</div>}
-						</div>
-					</section>
-				</div>
+			{appMode === "notebook" && (
+				<NotebookToolbar
+					saving={saveState === "saving"}
+					isExecuting={isExecuting}
+					hasSession={Boolean(activeSession)}
+					canMoveUp={selectedIndex > 0}
+					canMoveDown={selectedIndex >= 0 && selectedIndex < cells.length - 1}
+					canDelete={cells.length > 1}
+					runLabel={selectedIds.size > 1 ? `Execute ${selectedIds.size} selected cells` : "Execute cell"}
+					onSave={saveNotebook}
+					onToggleSidebar={cycleLeftPanel}
+					onToggleFind={() => setFindOpen((open) => !open)}
+					onRestartKernel={restartKernel}
+					onExecuteToHere={() => executeCells(cells.slice(0, selectedIndex + 1))}
+					onExecuteFromHere={() => executeCells(cells.slice(selectedIndex))}
+					onClearOutputs={clearOutputs}
+					onMoveUp={() => moveSelected(-1)}
+					onMoveDown={() => moveSelected(1)}
+					onDuplicate={duplicateSelected}
+					onDelete={deleteSelected}
+					onRun={runSelection}
+					onInterrupt={interruptKernel}
+					onKill={killKernel}
+					onExport={exportToPy}
+					onAddCell={() => addCell("below")}
+				/>
 			)}
 
-			<main className="notebook-layout" aria-describedby="workbench-status">
-				<section className="notebook-panel" aria-label="Notebook cells">
-					<div className="cell-stack">
-						{cells.map((cell, index) => (
-							<article key={cell.id} ref={(node) => { if (node) cellRefs.current.set(cell.id, node); else cellRefs.current.delete(cell.id); }} className={`cell-card ${cell.id === selectedId ? "selected" : ""}`} tabIndex={0} onKeyDownCapture={(event) => handleCellKeyCapture(event, cell)} onKeyDown={(event) => handleCellKey(event, cell)} onClick={() => setSelectedId(cell.id)}>
-								{dirtyCellIds.has(cell.id) && <span className="dirty-dot cell-dirty-dot" title="Changed since last save" />}
-								<div className="cell-header">
-									<button className="cell-toggle" type="button" aria-label="Toggle cell" aria-expanded={cell.cellOpen !== false} onClick={(event) => { event.stopPropagation(); setSelectedId(cell.id); patchCell(cell.id, { cellOpen: cell.cellOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.cellOpen !== false ? "open" : ""} /></button>
-									<div className="cell-heading" onClick={(event) => event.stopPropagation()}><div className="cell-title-row"><span>{index + 1}.</span><input className="cell-title-input" value={cell.title || "Untitled"} onChange={(event) => patchCell(cell.id, { title: event.target.value || "Untitled" })} /></div></div>
-									<select value={cell.kind} onClick={(event) => event.stopPropagation()} onChange={(event) => patchCell(cell.id, { kind: event.target.value as CellKind, outputOpen: event.target.value !== "code" ? true : cell.outputOpen })} aria-label="Cell type"><option value="code">Code</option><option value="markdown">Markdown</option><option value="mermaid">Mermaid</option></select>
-								</div>
-								<div className={`cell-body ${cell.cellOpen !== false ? "open" : ""}`}><div>
-									<div className="agent-accordion"><button type="button" aria-expanded={cell.codeOpen !== false} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { codeOpen: cell.codeOpen === false }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.codeOpen !== false ? "open" : ""} /><span>{cell.kind === "markdown" ? "Markdown" : cell.kind === "mermaid" ? "Mermaid" : "Code"}</span></button><div className={`agent-panel ${cell.codeOpen !== false ? "open" : ""}`}><div><div className="editor-shell"><div className="line-gutter" aria-hidden="true">{lineNumbers(cell.content).map((line) => <span key={line}>{line}</span>)}</div><textarea ref={(node) => { if (node) editorRefs.current.set(cell.id, node); else editorRefs.current.delete(cell.id); }} value={cell.content} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => handleEditorKey(event, cell)} onChange={(event) => patchCell(cell.id, { content: event.target.value })} spellCheck={false} aria-label={`${cell.title} source`} /></div></div></div></div>
-									{(cell.kind !== "code" || Boolean(cell.outputs?.length)) && <div className="agent-accordion"><button type="button" aria-expanded={Boolean(cell.outputOpen)} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { outputOpen: !cell.outputOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.outputOpen ? "open" : ""} /><span>Output</span>{cell.elapsedMs !== undefined && <small>{cell.elapsedMs}ms</small>}</button><div className={`agent-panel ${cell.outputOpen ? "open" : ""}`}><div>{cell.kind === "markdown" ? <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: renderMarkdown(cell.content) }} /> : cell.kind === "mermaid" ? <MermaidView source={cell.content} id={cell.id} /> : cell.outputs?.map((output, outputIndex) => <OutputView key={outputIndex} output={output} />)}</div></div></div>}
-									<div className="agent-accordion"><button type="button" aria-expanded={cell.agentOpen} onClick={(event) => { event.stopPropagation(); patchCell(cell.id, { agentOpen: !cell.agentOpen }); }}><FontAwesomeIcon icon={faChevronRight} className={cell.agentOpen ? "open" : ""} /><FontAwesomeIcon icon={faRobot} className="agent-bot-icon" aria-label="Cell agent" /></button><div className={`agent-panel ${cell.agentOpen ? "open" : ""}`}><div><p>Agent design lives here later. For now this is the reserved per-cell steering surface.</p><div className="agent-input-placeholder">Ask the cell agent…</div></div></div></div>
-								</div></div>
-							</article>
-						))}
-					</div>
-				</section>
-			</main>
+			{settingsOpen && (
+				<SettingsModal
+					page={settingsPage}
+					onPageChange={setSettingsPage}
+					onClose={() => setSettingsOpen(false)}
+					baseUrl={baseUrl}
+					onBaseUrlChange={setBaseUrl}
+					token={token}
+					onTokenChange={setToken}
+					kernelName={kernelName}
+					onKernelNameChange={setKernelName}
+					kernelSpecs={kernelSpecs}
+					connected={Boolean(providerId)}
+					isConnecting={isConnecting}
+					canConnect={apiStatus === "online"}
+					onToggleConnection={toggleProviderConnection}
+					requirements={startupRequirements}
+					onRequirementsChange={(value) => { setStartupRequirements(value); setStartupSaveState("dirty"); }}
+					onstart={startupOnstart}
+					onOnstartChange={(value) => { setStartupOnstart(value); setStartupSaveState("dirty"); }}
+					startupSaveState={startupSaveState}
+					onSaveStartup={async () => {
+						setStartupSaveState("saving");
+						await fetch("/api/startup", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requirements: startupRequirements, onstart: startupOnstart }) });
+						setStartupSaveState("saved");
+					}}
+					theme={themeName}
+					onThemeChange={setThemeName}
+				/>
+			)}
 
-			<footer className="status-bar" id="workbench-status" role="status" aria-live="polite">
-				<span>{statusMessage}</span>
-				<span>{saveState === "saving" ? "Saving" : saveState === "dirty" ? `${dirtyCellIds.size} unsaved cell${dirtyCellIds.size === 1 ? "" : "s"}` : "Saved"}</span>
-				<span>{activeSession ? `Kernel ${activeSession.kernelName ?? kernelName ?? "active"}` : "Kernel disconnected"}</span>
-				<span>{selectedCell ? `Cell ${selectedIndex + 1}: ${selectedCell.title || "Untitled"}` : "No cell selected"}</span>
-			</footer>
+			{vastWizardOpen && <VastWizard onClose={() => setVastWizardOpen(false)} onConnected={handleVastConnected} />}
+
+			<CommandPalette
+				open={paletteOpen}
+				onClose={() => setPaletteOpen(false)}
+				commands={paletteCommands}
+				snippets={snippets}
+				onInsertSnippet={(snippet) => insertSnippet(snippet)}
+				canSaveCell={appMode === "notebook" && Boolean(selectedCell)}
+				saveCellHint={selectedIds.size > 1 ? `${selectedIds.size} cells` : selectedCell?.title}
+				onSaveCellAsSnippet={saveCellsAsSnippet}
+				onOpenSnippetsScreen={() => { setAppMode("snippets"); refreshSnippets(); }}
+			/>
+
+			{findOpen && appMode === "notebook" && (
+				<FindBar
+					findQuery={findQuery}
+					onFindQueryChange={(value) => { setFindQuery(value); setMatchIndex(0); }}
+					replaceQuery={replaceQuery}
+					onReplaceQueryChange={setReplaceQuery}
+					matchCount={matchCount}
+					hasMatches={matchingCellIds.length > 0}
+					onPrev={() => gotoMatch(-1)}
+					onNext={() => gotoMatch(1)}
+					onReplace={replaceCurrent}
+					onReplaceAll={replaceAll}
+					onClose={() => setFindOpen(false)}
+				/>
+			)}
+
+			<main className={`app-main ${appMode === "notebook" ? "" : "no-pad"}`} aria-describedby="workbench-status"><div className={`notebook-layout ${sidebarOpen ? "with-sidebar" : ""}`}>
+				{sidebarOpen && (
+					<Sidebar
+						panel={leftPanel}
+						toc={toc}
+						onScrollToCell={scrollToCell}
+						fileDir={fileDir}
+						fileTree={fileTree}
+						onLoadFiles={loadFiles}
+						onOpenFile={openFile}
+						variables={variables}
+						variablesLoading={variablesLoading}
+						onLoadVariables={loadVariables}
+					/>
+				)}
+
+				{appMode === "notebook" && (
+					<section className="notebook-panel" aria-label="Notebook cells">
+						<div className="cell-stack">
+							{cells.map((cell, index) => (
+								<NotebookCellView
+									key={cell.id}
+									cell={cell}
+									index={index}
+									theme={themeName}
+									selected={cell.id === selectedId}
+									multiSelected={selectedIds.has(cell.id)}
+									running={runningCellId === cell.id}
+									editing={editingCellId === cell.id}
+									dragOver={dragOverId === cell.id && dragSrcId !== cell.id}
+									dirty={dirtyCellIds.has(cell.id)}
+									execCount={execCounts.get(cell.id)}
+									registerCell={(id, node) => { if (node) cellRefs.current.set(id, node); else cellRefs.current.delete(id); }}
+									registerEditor={(id, handle) => { if (handle) editorRefs.current.set(id, handle); else editorRefs.current.delete(id); }}
+									onCellClick={handleCellClick}
+									onCellKeyDown={handleCellKey}
+									onCellKeyDownCapture={handleCellKeyCapture}
+									onDragStart={handleDragStart}
+									onDragOver={handleDragOver}
+									onDrop={handleDrop}
+									onDragEnd={handleDragEnd}
+									onPatch={patchCell}
+									onSelect={setSelectedId}
+									onClearOutput={clearCellOutput}
+									onRun={(target) => { setSelectedId(target.id); executeCells([target]); }}
+									onRunAdvance={(target) => { setSelectedId(target.id); executeAndAdvance(target); }}
+									onSave={saveNotebook}
+									onFocusCell={focusCell}
+									onEditorFocus={(id) => setEditingCellId(id)}
+									onEditorBlur={(id) => setEditingCellId((cur) => cur === id ? undefined : cur)}
+								/>
+							))}
+						</div>
+					</section>
+				)}
+
+				{appMode === "terminal" && (
+					<section className="notebook-panel terminal-panel" aria-label="Terminal">
+						{providerId ? <TerminalPane providerId={providerId} terminalName={terminalName} onReady={setTerminalName} theme={themeName} /> : <div className="empty-output">Connect a Jupyter provider to open a terminal.</div>}
+					</section>
+				)}
+
+				{appMode === "snippets" && (
+					<SnippetsScreen snippets={snippets} theme={themeName} onChange={refreshSnippets} onInsert={(snippet) => insertSnippet(snippet)} onStatus={setStatus} />
+				)}
+
+				{appMode === "explorer" && (
+					<ExplorerPane fileDir={fileDir} fileTree={fileTree} onLoadFiles={loadFiles} onOpenFile={openFile} onNewNotebook={newNotebook} />
+				)}
+
+				{appMode === "file" && (
+					<FileEditorPane
+						fileDir={fileDir}
+						fileTree={fileTree}
+						onLoadFiles={loadFiles}
+						onOpenFile={openFile}
+						currentFilePath={currentFilePath}
+						fileContent={fileContent}
+						fileLanguage={fileLanguage}
+						fileDirty={fileDirty}
+						fileOutputs={fileOutputs}
+						isExecuting={isExecuting}
+						theme={themeName}
+						onContentChange={(value) => { setFileContent(value); setFileDirty(true); }}
+						onSave={saveFile}
+						onRun={runFile}
+					/>
+				)}
+			</div></main>
+
+			<StatusBar
+				statusMessage={statusMessage}
+				saveLabel={saveState === "saving" ? "Saving…" : saveState === "dirty" ? `${dirtyCellIds.size} unsaved` : "Saved"}
+				cellLabel={selectedIds.size > 1 ? `${selectedIds.size} cells` : selectedCell ? `cell ${selectedIndex + 1}/${cells.length}` : "—"}
+				costLabel={costPerHour != null && sessionConnectedAt != null ? (() => { void costTick; const elapsed = (Date.now() - sessionConnectedAt) / 1000; return `$${(costPerHour / 3600 * elapsed).toFixed(4)} · $${costPerHour.toFixed(4)}/hr`; })() : undefined}
+				hasSession={Boolean(activeSession)}
+				kernelStatus={kernelStatus}
+				kernelName={kernelName}
+				kernelSpecs={kernelSpecs}
+				onSwitchKernel={switchKernel}
+				providerLabel={providerId ? providerId.replace(/^vast-/, "Vast #") : "no provider"}
+				onChooseProvider={() => setVastWizardOpen(true)}
+			/>
 		</div>
 	);
 }
+
+type ReactMouseLikeEvent = { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean };
