@@ -863,11 +863,21 @@ httpServer.on("upgrade", (request, socket, head) => {
 				clientWs.close();
 				return;
 			}
+			const sid = decodeURIComponent(sessionId);
 			clientWs.on("message", (data: Buffer) => {
 				try {
 					const msg = JSON.parse(data.toString());
-					if (msg?.type === "comm_msg" && msg.targetName && msg.commId) {
-						void runtime.sendCommMessage(decodeURIComponent(sessionId), String(msg.targetName), String(msg.commId), msg.data).catch(() => undefined);
+					const commId = msg?.commId ? String(msg.commId) : "";
+					if (msg?.type === "comm_open" && msg.targetName && commId) {
+						void runtime.openComm(sid, String(msg.targetName), commId, msg.data, msg.metadata, msg.buffers).catch(() => undefined);
+					} else if (msg?.type === "comm_msg" && commId) {
+						void runtime.sendCommMessage(sid, String(msg.targetName ?? "jupyter.widget"), commId, msg.data, msg.buffers).catch(() => undefined);
+					} else if (msg?.type === "comm_close" && commId) {
+						void runtime.closeComm(sid, commId).catch(() => undefined);
+					} else if (msg?.type === "comm_info") {
+						void runtime.commInfo(sid, msg.targetName ? String(msg.targetName) : undefined)
+							.then((comms) => { if (clientWs.readyState === WebSocket.OPEN) clientWs.send(JSON.stringify({ msgType: "comm_info_reply", content: { comms }, metadata: {}, parentMsgId: msg.requestId })); })
+							.catch(() => undefined);
 					}
 				} catch { /* ignore malformed frames */ }
 			});

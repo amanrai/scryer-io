@@ -37,6 +37,8 @@ import { NotebookToolbar } from "./components/NotebookToolbar.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { listSnippets, createSnippet, type Snippet } from "./snippets.js";
 import { KernelChannel } from "./kernel-channel.js";
+import { WidgetManager } from "./widgets/manager.js";
+import { WidgetManagerContext } from "./widgets/context.js";
 import { notebookToHtml, downloadHtml, printHtml } from "./export.js";
 import { appendRichOutput, cellsFromNotebook, countOccurrences, notebookFromCells, tableOfContents } from "./ipynb.js";
 import { isCommand, nowLabel, type AppMode, type FileEntry, type KernelSpec, type KernelStatus, type LeftPanel, type NotebookCell, type RichOutput, type RuntimeSession, type SavedProvider, type ThemeName, type VariableRow } from "./types.js";
@@ -132,6 +134,7 @@ export function App() {
 	const cellRefs = useRef(new Map<string, HTMLElement>());
 	const editorRefs = useRef(new Map<string, CodeEditorHandle>());
 	const kernelChannelRef = useRef<KernelChannel | null>(null);
+	const [widgetManager, setWidgetManager] = useState<WidgetManager | null>(null);
 	const selectedIndex = cells.findIndex((cell) => cell.id === selectedId);
 	const selectedCell = cells[selectedIndex] ?? cells[0];
 	const notebookName = notebookPath ? (notebookPath.split(/[\\/]/).pop() ?? "notebook.ipynb").replace(/\.ipynb$/i, "") || "Untitled" : null;
@@ -213,13 +216,15 @@ export function App() {
 		return () => clearInterval(timer);
 	}, []);
 
-	// Live session channel: open while a kernel session is active. Subscribers
-	// (widget manager, live-display renderers) attach via kernelChannelRef.
+	// Live session channel + widget manager: live while a kernel session is
+	// active. The manager rides the channel for all ipywidgets comm traffic.
 	useEffect(() => {
-		if (!providerId || !activeSession) { kernelChannelRef.current = null; return; }
+		if (!providerId || !activeSession) { kernelChannelRef.current = null; setWidgetManager(null); return; }
 		const channel = new KernelChannel(providerId, activeSession.id);
 		kernelChannelRef.current = channel;
-		return () => { channel.close(); kernelChannelRef.current = null; };
+		const manager = new WidgetManager(channel);
+		setWidgetManager(manager);
+		return () => { manager.dispose(); channel.close(); kernelChannelRef.current = null; setWidgetManager(null); };
 	}, [providerId, activeSession?.id]);
 
 	// Kernel status polling every 2s
@@ -1067,6 +1072,7 @@ export function App() {
 	];
 
 	return (
+		<WidgetManagerContext.Provider value={widgetManager}>
 		<div className="app-shell" data-theme={themeName} onKeyDownCapture={handleWorkbenchKeyCapture}>
 			<header className="topbar">
 				<div className="brand-block"><h1 title={notebookPath}>Scryer IO{notebookName ? ` · ${notebookName}` : ""}</h1></div>
@@ -1283,6 +1289,7 @@ export function App() {
 				onChooseProvider={() => setVastWizardOpen(true)}
 			/>
 		</div>
+		</WidgetManagerContext.Provider>
 	);
 }
 

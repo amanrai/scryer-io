@@ -2,7 +2,9 @@
 
 Tracks the 8 approved features from PM ticket **Features Required** (`124ffd6e-e3bc-4787-a97a-6ad180c30a78`, project Scryer Io). Build order: **Plumbing → 2 → 1 → 3 → 8 → 4 → 5 → 6 → 7**. Every user-facing entry point is a Cmd+K palette command (`paletteCommands` in `src/ui/App.tsx`) and/or a `NotebookToolbar` button.
 
-**Status (2026-06-19):** ✅ Phase 0 plumbing · ✅ Feature 1 (completion, verified vs live kernel) · ✅ Feature 3 (run-all + queue) · ✅ Feature 4 (DataFrame viewer, parser verified) · ✅ Feature 5 (interactive plots) · ✅ Feature 6 (lint/format, verified vs ruff) · ✅ Feature 7 (HTML/PDF/py export) · ✅ Feature 8 (output mgmt) · ⏳ **Feature 2 only remaining** — tqdm `\r` slice done; live ipywidgets manager outstanding (needs an ipywidgets kernel to verify).
+**Status (2026-06-19):** ✅ Phase 0 plumbing · ✅ Feature 1 (completion) · ✅ Feature 3 (run-all + queue) · ✅ Feature 4 (DataFrame viewer) · ✅ Feature 5 (interactive plots) · ✅ Feature 6 (lint/format) · ✅ Feature 7 (HTML/PDF/py export) · ✅ Feature 8 (output mgmt) · 🟡 Feature 2 (widgets) — comm transport built + **verified end-to-end** (IntSlider forwards comm_open + widget-view model_id, no comm exceptions); browser manager built & compiling; **live in-browser widget render still to be eyeballed**.
+
+All 8 features build clean. Server-verified: completion/inspect, lint/format, dataframe parse, widget comm transport. Browser-visual-verify pending: plots (5), HTML/PDF export (7), live widget render (2).
 
 Key files: `src/jupyter-runtime.ts` (kernel), `src/server/index.ts` (routes), `src/ui/App.tsx` (state/commands), `src/ui/components/{OutputView,CodeEditor,CommandPalette,NotebookToolbar,Sidebar}.tsx`, `src/ui/types.ts`, `src/ui/ipynb.ts`.
 
