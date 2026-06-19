@@ -8,8 +8,10 @@ import {
 } from "@jupyterlab/services";
 import type {
 	CellOutput,
+	CompleteResult,
 	ExecuteRequest,
 	ExecuteResult,
+	InspectResult,
 	JupyterProviderProfile,
 	KernelSpecSummary,
 	RuntimeSession,
@@ -64,6 +66,7 @@ function outputFromMessage(msg: KernelMessage.IIOPubMessage): CellOutput | undef
 			kind: "display_data",
 			data: msg.content.data as Record<string, unknown>,
 			metadata: msg.content.metadata as Record<string, unknown>,
+			displayId: (msg.content.transient as { display_id?: string } | undefined)?.display_id,
 		};
 	}
 	if (KernelMessage.isErrorMsg(msg)) {
@@ -77,10 +80,49 @@ function outputFromMessage(msg: KernelMessage.IIOPubMessage): CellOutput | undef
 	if (KernelMessage.isStatusMsg(msg)) {
 		return { kind: "status", executionState: msg.content.execution_state };
 	}
+	if (msg.header.msg_type === "update_display_data") {
+		const content = msg.content as KernelMessage.IUpdateDisplayDataMsg["content"];
+		return {
+			kind: "update_display_data",
+			data: content.data as Record<string, unknown>,
+			metadata: content.metadata as Record<string, unknown>,
+			displayId: (content.transient as { display_id?: string } | undefined)?.display_id,
+		};
+	}
+	if (msg.header.msg_type === "clear_output") {
+		const content = msg.content as KernelMessage.IClearOutputMsg["content"];
+		return { kind: "clear_output", wait: Boolean(content.wait) };
+	}
 	if (msg.header.msg_type === "execute_input") {
 		return undefined;
 	}
+	// comm_open / comm_msg / comm_close are intentionally not turned into cell
+	// outputs; they flow over the live session channel to the widget manager.
+	if (msg.header.msg_type.startsWith("comm_")) {
+		return undefined;
+	}
 	return { kind: "unknown", messageType: msg.header.msg_type, content: msg.content };
+}
+
+/** A raw IOPub message forwarded over the live session channel. */
+export type IOPubEnvelope = {
+	msgType: string;
+	content: unknown;
+	metadata: Record<string, unknown>;
+	parentMsgId?: string;
+	parentMsgType?: string;
+	buffers?: number;
+};
+
+function toEnvelope(msg: KernelMessage.IIOPubMessage): IOPubEnvelope {
+	return {
+		msgType: msg.header.msg_type,
+		content: msg.content,
+		metadata: (msg.metadata ?? {}) as Record<string, unknown>,
+		parentMsgId: msg.parent_header && "msg_id" in msg.parent_header ? msg.parent_header.msg_id : undefined,
+		parentMsgType: msg.parent_header && "msg_type" in msg.parent_header ? msg.parent_header.msg_type : undefined,
+		buffers: msg.buffers?.length ?? 0,
+	};
 }
 
 export class JupyterRuntime {
@@ -240,6 +282,64 @@ export class JupyterRuntime {
 		const session = await this.getSessionConnection(sessionId);
 		await session.shutdown();
 		this.sessions.delete(sessionId);
+	}
+
+	/** Tab-completion request against the live kernel (Feature 1). */
+	async requestComplete(sessionId: string, code: string, cursorPos: number): Promise<CompleteResult> {
+		const session = await this.getSessionConnection(sessionId);
+		if (!session.kernel) throw new Error(`Session ${sessionId} has no active kernel`);
+		const reply = await session.kernel.requestComplete({ code, cursor_pos: cursorPos });
+		const content = reply.content;
+		if (content.status !== "ok") return { matches: [], cursorStart: cursorPos, cursorEnd: cursorPos };
+		return {
+			matches: content.matches ?? [],
+			cursorStart: content.cursor_start,
+			cursorEnd: content.cursor_end,
+			metadata: content.metadata as Record<string, unknown> | undefined,
+		};
+	}
+
+	/** Introspection (Shift+Tab signature/docstring) against the live kernel (Feature 1). */
+	async requestInspect(sessionId: string, code: string, cursorPos: number, detailLevel: 0 | 1 = 0): Promise<InspectResult> {
+		const session = await this.getSessionConnection(sessionId);
+		if (!session.kernel) throw new Error(`Session ${sessionId} has no active kernel`);
+		const reply = await session.kernel.requestInspect({ code, cursor_pos: cursorPos, detail_level: detailLevel });
+		const content = reply.content;
+		if (content.status !== "ok" || !content.found) return { found: false, data: {} };
+		return { found: true, data: content.data as Record<string, unknown> };
+	}
+
+	/**
+	 * Subscribe to every IOPub message for a session and forward it raw. Used by
+	 * the live session channel so the browser-side widget manager and renderers
+	 * see comm/display traffic that the one-shot execute path does not persist.
+	 * Returns an unsubscribe function.
+	 */
+	async subscribeIOPub(sessionId: string, onMessage: (envelope: IOPubEnvelope) => void): Promise<() => void> {
+		const session = await this.getSessionConnection(sessionId);
+		const handler = (_: unknown, msg: KernelMessage.IIOPubMessage) => onMessage(toEnvelope(msg));
+		const connect = (kernel: Session.ISessionConnection["kernel"]) => kernel?.iopubMessage.connect(handler);
+		const disconnect = (kernel: Session.ISessionConnection["kernel"]) => kernel?.iopubMessage.disconnect(handler);
+		connect(session.kernel);
+		// Re-attach across restarts (the kernel connection is swapped on restart).
+		type KernelChanged = { oldValue: Session.ISessionConnection["kernel"]; newValue: Session.ISessionConnection["kernel"] };
+		const onKernelChanged = (_: unknown, args: KernelChanged) => {
+			disconnect(args.oldValue);
+			connect(args.newValue);
+		};
+		session.kernelChanged.connect(onKernelChanged);
+		return () => {
+			disconnect(session.kernel);
+			session.kernelChanged.disconnect(onKernelChanged);
+		};
+	}
+
+	/** Relay a comm message from the browser widget manager to the kernel. */
+	async sendCommMessage(sessionId: string, targetName: string, commId: string, data: unknown): Promise<void> {
+		const session = await this.getSessionConnection(sessionId);
+		if (!session.kernel) throw new Error(`Session ${sessionId} has no active kernel`);
+		const comm = session.kernel.createComm(targetName, commId);
+		comm.send(data as Parameters<typeof comm.send>[0]);
 	}
 
 	private async getSessionConnection(sessionId: string): Promise<Session.ISessionConnection> {

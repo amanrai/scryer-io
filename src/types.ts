@@ -66,10 +66,24 @@ export type Snippet = {
 
 export type CellOutput =
 	| { kind: "stream"; name: "stdout" | "stderr"; text: string }
-	| { kind: "execute_result" | "display_data"; data: Record<string, unknown>; metadata?: Record<string, unknown> }
+	| { kind: "execute_result" | "display_data"; data: Record<string, unknown>; metadata?: Record<string, unknown>; displayId?: string }
+	| { kind: "update_display_data"; data: Record<string, unknown>; metadata?: Record<string, unknown>; displayId?: string }
+	| { kind: "clear_output"; wait: boolean }
 	| { kind: "error"; ename: string; evalue: string; traceback: string[] }
 	| { kind: "status"; executionState: string }
 	| { kind: "unknown"; messageType: string; content: unknown };
+
+export type CompleteResult = {
+	matches: string[];
+	cursorStart: number;
+	cursorEnd: number;
+	metadata?: Record<string, unknown>;
+};
+
+export type InspectResult = {
+	found: boolean;
+	data: Record<string, unknown>;
+};
 
 export type ExecuteResult = {
 	providerId: string;
