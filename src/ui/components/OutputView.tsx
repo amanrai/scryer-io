@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import DOMPurify from "dompurify";
 import { plainTextData } from "../ipynb.js";
-import type { RichOutput } from "../types.js";
+import { DataFrameView, isDataFrameHtml } from "./DataFrameView.js";
+import { PlotlyView, VegaView } from "./PlotView.js";
+import { WidgetView } from "./WidgetView.js";
+import type { RichOutput, ThemeName } from "../types.js";
 
 const ANSI_FG: Record<number, string> = {
 	30: "#4C566A", 31: "#E06C75", 32: "#98C379", 33: "#E5C07B",
@@ -73,7 +76,12 @@ export function MermaidView({ source, id }: { source: string; id: string }) {
 	return <div className="mermaid-output" dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
-export function OutputView({ output }: { output: RichOutput }) {
+const WIDGET_VIEW_MIME = "application/vnd.jupyter.widget-view+json";
+// Interactive plot mimetypes, richest first (Feature 5).
+const PLOTLY_MIME = "application/vnd.plotly.v1+json";
+const VEGA_MIMES = ["application/vnd.vegalite.v5+json", "application/vnd.vegalite.v4+json", "application/vnd.vega.v5+json"];
+
+export function OutputView({ output, theme = "dark" }: { output: RichOutput; theme?: ThemeName }) {
 	if (output.kind === "status") return null;
 	if (output.kind === "stream") return <AnsiPre className={`cell-output ${output.name}`} text={output.text} />;
 	if (output.kind === "error") {
@@ -81,11 +89,19 @@ export function OutputView({ output }: { output: RichOutput }) {
 		return <AnsiPre className="cell-output error" text={text} />;
 	}
 	if (output.kind === "execute_result" || output.kind === "display_data") {
+		const data = output.data;
+		const widget = data[WIDGET_VIEW_MIME] as { model_id?: string } | undefined;
+		if (widget?.model_id) return <WidgetView modelId={widget.model_id} />;
+		const plotly = data[PLOTLY_MIME];
+		if (plotly && typeof plotly === "object") return <PlotlyView figure={plotly as any} theme={theme} />;
+		const vegaMime = VEGA_MIMES.find((mime) => data[mime] && typeof data[mime] === "object");
+		if (vegaMime) return <VegaView spec={data[vegaMime] as Record<string, unknown>} theme={theme} />;
 		const html = output.data["text/html"];
 		const png = output.data["image/png"];
 		const svg = output.data["image/svg+xml"];
 		const json = output.data["application/json"];
 		const rawHtml = Array.isArray(html) ? html.join("") : typeof html === "string" ? html : null;
+		if (rawHtml && isDataFrameHtml(rawHtml)) return <DataFrameView html={DOMPurify.sanitize(rawHtml)} />;
 		if (rawHtml) return <div className="rich-output" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(rawHtml) }} />;
 		if (typeof png === "string") return <div className="rich-output"><img src={`data:image/png;base64,${png}`} alt="cell output" style={{ maxWidth: "100%" }} /></div>;
 		if (typeof svg === "string") return <div className="rich-output" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(typeof svg === "string" ? svg : "") }} />;

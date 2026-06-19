@@ -2,7 +2,8 @@ import type { KeyboardEvent, MouseEvent } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faChevronRight, faEraser, faRobot } from "@fortawesome/free-solid-svg-icons";
 import { CodeEditor, type CodeEditorHandle } from "./CodeEditor.js";
-import { OutputView, MermaidView } from "./OutputView.js";
+import { MermaidView } from "./OutputView.js";
+import { OutputBlock } from "./OutputBlock.js";
 import { renderMarkdown } from "../markdown.js";
 import type { CellKind, NotebookCell, ThemeName } from "../types.js";
 
@@ -10,9 +11,12 @@ type NotebookCellViewProps = {
 	cell: NotebookCell;
 	index: number;
 	theme: ThemeName;
+	providerId?: string;
+	sessionId?: string;
 	selected: boolean;
 	multiSelected: boolean;
 	running: boolean;
+	queued: boolean;
 	editing: boolean;
 	dragOver: boolean;
 	dirty: boolean;
@@ -41,9 +45,12 @@ export function NotebookCellView({
 	cell,
 	index,
 	theme,
+	providerId,
+	sessionId,
 	selected,
 	multiSelected,
 	running,
+	queued,
 	editing,
 	dragOver,
 	dirty,
@@ -74,7 +81,7 @@ export function NotebookCellView({
 	return (
 		<article
 			ref={(node) => registerCell(cell.id, node)}
-			className={`cell-card ${selected ? "selected" : ""} ${multiSelected ? "multi-selected" : ""} ${running ? "running" : ""} ${editing ? "editing" : ""} ${dragOver ? "drag-over" : ""}`}
+			className={`cell-card ${selected ? "selected" : ""} ${multiSelected ? "multi-selected" : ""} ${running ? "running" : ""} ${queued ? "queued" : ""} ${editing ? "editing" : ""} ${dragOver ? "drag-over" : ""}`}
 			tabIndex={0}
 			draggable
 			onDragStart={() => onDragStart(cell.id)}
@@ -93,7 +100,7 @@ export function NotebookCellView({
 				<div className="cell-heading" onClick={(event) => event.stopPropagation()}>
 					<div className="cell-title-row">
 						<span className="cell-num">{index + 1}</span>
-						{cell.kind === "code" && <span className="exec-count">[{execCount ?? " "}]</span>}
+						{cell.kind === "code" && <span className="exec-count">[{running || queued ? "*" : execCount ?? " "}]</span>}
 						<input className="cell-title-input" value={cell.title || "Untitled"} onChange={(event) => onPatch(cell.id, { title: event.target.value || "Untitled" })} />
 					</div>
 				</div>
@@ -121,6 +128,8 @@ export function NotebookCellView({
 									value={cell.content}
 									language={cell.kind === "code" ? "python" : "markdown"}
 									theme={theme}
+									providerId={providerId}
+									sessionId={sessionId}
 									onChange={(value) => onPatch(cell.id, { content: value })}
 									onRun={() => onRun(cell)}
 									onRunAdvance={() => onRunAdvance(cell)}
@@ -144,7 +153,7 @@ export function NotebookCellView({
 									? <div className="markdown-preview" dangerouslySetInnerHTML={{ __html: renderMarkdown(cell.content) }} />
 									: cell.kind === "mermaid"
 										? <MermaidView source={cell.content} id={cell.id} />
-										: cell.outputs?.map((output, outputIndex) => <OutputView key={outputIndex} output={output} />)}
+										: cell.outputs?.map((output, outputIndex) => <OutputBlock key={outputIndex} output={output} theme={theme} />)}
 							</div>
 						</div></div>
 					</div>

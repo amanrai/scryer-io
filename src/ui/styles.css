@@ -989,6 +989,9 @@ textarea {
 	display: flex;
 	flex-direction: column;
 	padding: 6px;
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
 }
 
 .explorer-row {
@@ -1975,4 +1978,158 @@ textarea {
 	background: var(--accent);
 	border-color: var(--accent);
 	color: #fff;
+}
+
+/* Shift+Tab introspection popover (Feature 1: code intelligence) */
+.cm-inspect-tooltip {
+	max-width: 560px;
+	max-height: 340px;
+	overflow: auto;
+	background: var(--surface, #1e1e1e);
+	border: 1px solid var(--border, #3a3a3a);
+	border-radius: 8px;
+	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+}
+.cm-inspect-tooltip pre {
+	margin: 0;
+	padding: 10px 12px;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 12px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+/* Queued cells in a Run All / Run Above-Below batch (Feature 3) */
+.cell-card.queued {
+	opacity: 0.7;
+}
+.cell-card.queued .exec-count {
+	color: var(--accent, #6aa3ff);
+}
+
+/* Output management: per-output toolbar + collapse/scroll (Feature 8) */
+.output-block {
+	position: relative;
+}
+.output-block-actions {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	display: flex;
+	gap: 2px;
+	opacity: 0;
+	transition: opacity 0.12s ease;
+	z-index: 2;
+}
+.output-block:hover .output-block-actions {
+	opacity: 1;
+}
+.output-block-actions button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	border: 1px solid var(--border, #3a3a3a);
+	border-radius: 6px;
+	background: var(--surface, #1e1e1e);
+	color: var(--text-dim, #aaa);
+	cursor: pointer;
+	font-size: 11px;
+}
+.output-block-actions button:hover {
+	color: var(--text, #eee);
+	border-color: var(--accent, #6aa3ff);
+}
+.output-block-body.constrained {
+	overflow: auto;
+	position: relative;
+	mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent 100%);
+	-webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent 100%);
+}
+.output-block-more {
+	display: block;
+	width: 100%;
+	margin-top: 2px;
+	padding: 3px 0;
+	border: none;
+	border-top: 1px solid var(--border, #3a3a3a);
+	background: transparent;
+	color: var(--accent, #6aa3ff);
+	font-size: 11px;
+	cursor: pointer;
+}
+
+/* Interactive DataFrame viewer (Feature 4) */
+.dataframe-view {
+	border: 1px solid var(--border, #3a3a3a);
+	border-radius: 8px;
+	overflow: hidden;
+	font-size: 12px;
+}
+.dataframe-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--border, #3a3a3a);
+	background: var(--surface-2, #232323);
+}
+.dataframe-shape {
+	color: var(--text-dim, #999);
+	font-variant-numeric: tabular-nums;
+}
+.dataframe-scroll {
+	max-height: 420px;
+	overflow: auto;
+}
+.dataframe-table {
+	border-collapse: collapse;
+	width: 100%;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.dataframe-table th,
+.dataframe-table td {
+	padding: 4px 10px;
+	text-align: right;
+	white-space: nowrap;
+	border-bottom: 1px solid var(--border, #2e2e2e);
+}
+.dataframe-table thead th {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	background: var(--surface-2, #232323);
+	cursor: pointer;
+	user-select: none;
+	color: var(--text, #eee);
+}
+.dataframe-table thead th:hover {
+	color: var(--accent, #6aa3ff);
+}
+.dataframe-sort-icon {
+	margin-left: 6px;
+	opacity: 0.5;
+	font-size: 10px;
+}
+.dataframe-index {
+	color: var(--text-dim, #999);
+	background: var(--surface-2, #232323);
+	position: sticky;
+	left: 0;
+}
+.dataframe-pager {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	padding: 5px;
+	border-top: 1px solid var(--border, #3a3a3a);
+	color: var(--text-dim, #999);
+}
+
+/* Interactive plot output (Feature 5) */
+.plot-output {
+	margin: 4px 0;
 }

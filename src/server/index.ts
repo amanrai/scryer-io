@@ -1,5 +1,6 @@
 import express from "express";
 import http from "node:http";
+import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -344,9 +345,92 @@ app.post("/api/runtime/providers/:providerId/variables", async (req, res) => {
 	}
 });
 
+app.post("/api/runtime/providers/:providerId/complete", async (req, res) => {
+	try {
+		const body = req.body ?? {};
+		const code = String(body.code ?? "");
+		const cursorPos = Number(body.cursorPos ?? code.length);
+		const sessionId = body.sessionId ? String(body.sessionId) : activeSession?.providerId === req.params.providerId ? activeSession.id : undefined;
+		if (!sessionId) return res.status(400).json({ error: "No active session" });
+		res.json(await getRuntime(req.params.providerId).requestComplete(sessionId, code, cursorPos));
+	} catch (err: any) {
+		res.status(500).json({ error: err?.message ?? String(err) });
+	}
+});
+
+app.post("/api/runtime/providers/:providerId/inspect", async (req, res) => {
+	try {
+		const body = req.body ?? {};
+		const code = String(body.code ?? "");
+		const cursorPos = Number(body.cursorPos ?? code.length);
+		const detailLevel = body.detailLevel === 1 ? 1 : 0;
+		const sessionId = body.sessionId ? String(body.sessionId) : activeSession?.providerId === req.params.providerId ? activeSession.id : undefined;
+		if (!sessionId) return res.status(400).json({ error: "No active session" });
+		res.json(await getRuntime(req.params.providerId).requestInspect(sessionId, code, cursorPos, detailLevel));
+	} catch (err: any) {
+		res.status(500).json({ error: err?.message ?? String(err) });
+	}
+});
+
 app.post("/api/runtime/providers/:providerId/terminals", async (req, res) => {
 	try {
 		res.status(201).json(await getRuntime(req.params.providerId).createTerminal());
+	} catch (err: any) {
+		res.status(500).json({ error: err?.message ?? String(err) });
+	}
+});
+
+// Run ruff over stdin. Tries the `ruff` binary, then `python3 -m ruff`. Resolves
+// with available:false (never throws) when ruff is not installed (Feature 6).
+function runRuff(args: string[], input: string): Promise<{ available: boolean; code: number; stdout: string; stderr: string }> {
+	const candidates: Array<{ cmd: string; argv: string[] }> = process.env.SCRYER_RUFF_BIN
+		? [{ cmd: process.env.SCRYER_RUFF_BIN, argv: args }]
+		: [{ cmd: "ruff", argv: args }, { cmd: "python3", argv: ["-m", "ruff", ...args] }];
+	return new Promise((resolve) => {
+		const attempt = (index: number) => {
+			const candidate = candidates[index];
+			if (!candidate) { resolve({ available: false, code: -1, stdout: "", stderr: "ruff not found" }); return; }
+			let stdout = "", stderr = "";
+			let spawnFailed = false;
+			const child = spawn(candidate.cmd, candidate.argv, { stdio: ["pipe", "pipe", "pipe"] });
+			child.on("error", () => { spawnFailed = true; attempt(index + 1); });
+			child.stdout.on("data", (chunk) => { stdout += chunk; });
+			child.stderr.on("data", (chunk) => { stderr += chunk; });
+			child.on("close", (code) => { if (!spawnFailed) resolve({ available: true, code: code ?? 0, stdout, stderr }); });
+			child.stdin.end(input);
+		};
+		attempt(0);
+	});
+}
+
+app.post("/api/lint", async (req, res) => {
+	try {
+		const code = String(req.body?.code ?? "");
+		if (!code.trim()) return res.json({ available: true, diagnostics: [] });
+		const result = await runRuff(["check", "--output-format", "json", "--stdin-filename", "cell.py", "-"], code);
+		if (!result.available) return res.json({ available: false, diagnostics: [] });
+		let diagnostics: unknown[] = [];
+		try {
+			const parsed = JSON.parse(result.stdout || "[]") as Array<any>;
+			diagnostics = parsed.map((d) => ({
+				code: d.code, message: d.message,
+				line: d.location?.row ?? 1, column: d.location?.column ?? 1,
+				endLine: d.end_location?.row ?? d.location?.row ?? 1, endColumn: d.end_location?.column ?? (d.location?.column ?? 1) + 1,
+			}));
+		} catch { diagnostics = []; }
+		res.json({ available: true, diagnostics });
+	} catch (err: any) {
+		res.status(500).json({ error: err?.message ?? String(err) });
+	}
+});
+
+app.post("/api/format", async (req, res) => {
+	try {
+		const code = String(req.body?.code ?? "");
+		const result = await runRuff(["format", "-"], code);
+		if (!result.available) return res.json({ available: false, formatted: code });
+		if (result.code !== 0) return res.status(422).json({ available: true, error: result.stderr || "Format failed", formatted: code });
+		res.json({ available: true, formatted: result.stdout });
 	} catch (err: any) {
 		res.status(500).json({ error: err?.message ?? String(err) });
 	}
@@ -749,10 +833,59 @@ await loadProviders();
 
 const httpServer = new http.Server(app);
 const terminalWss = new WebSocketServer({ noServer: true });
+const channelWss = new WebSocketServer({ noServer: true });
 const TERMINAL_PATH = /^\/api\/runtime\/providers\/([^/]+)\/terminals\/([^/]+)\/?$/;
+const CHANNEL_PATH = /^\/api\/runtime\/providers\/([^/]+)\/sessions\/([^/]+)\/channel\/?$/;
 
+// Live session channel: forwards every kernel IOPub message to the browser and
+// relays inbound comm messages back to the kernel. Foundation for widgets
+// (Feature 2) and live display/clear_output updates.
 httpServer.on("upgrade", (request, socket, head) => {
 	const url = new URL(request.url ?? "/", "http://127.0.0.1");
+	const channelMatch = CHANNEL_PATH.exec(url.pathname);
+	if (channelMatch) {
+		const [, providerId, sessionId] = channelMatch;
+		let runtime: JupyterRuntime;
+		try {
+			runtime = getRuntime(decodeURIComponent(providerId));
+		} catch {
+			socket.destroy();
+			return;
+		}
+		channelWss.handleUpgrade(request, socket, head, async (clientWs) => {
+			let unsubscribe: (() => void) | undefined;
+			try {
+				unsubscribe = await runtime.subscribeIOPub(decodeURIComponent(sessionId), (envelope) => {
+					if (clientWs.readyState === WebSocket.OPEN) clientWs.send(JSON.stringify(envelope));
+				});
+			} catch (err: any) {
+				if (clientWs.readyState === WebSocket.OPEN) clientWs.send(JSON.stringify({ msgType: "channel_error", content: { error: err?.message ?? String(err) }, metadata: {} }));
+				clientWs.close();
+				return;
+			}
+			const sid = decodeURIComponent(sessionId);
+			clientWs.on("message", (data: Buffer) => {
+				try {
+					const msg = JSON.parse(data.toString());
+					const commId = msg?.commId ? String(msg.commId) : "";
+					if (msg?.type === "comm_open" && msg.targetName && commId) {
+						void runtime.openComm(sid, String(msg.targetName), commId, msg.data, msg.metadata, msg.buffers).catch(() => undefined);
+					} else if (msg?.type === "comm_msg" && commId) {
+						void runtime.sendCommMessage(sid, String(msg.targetName ?? "jupyter.widget"), commId, msg.data, msg.buffers).catch(() => undefined);
+					} else if (msg?.type === "comm_close" && commId) {
+						void runtime.closeComm(sid, commId).catch(() => undefined);
+					} else if (msg?.type === "comm_info") {
+						void runtime.commInfo(sid, msg.targetName ? String(msg.targetName) : undefined)
+							.then((comms) => { if (clientWs.readyState === WebSocket.OPEN) clientWs.send(JSON.stringify({ msgType: "comm_info_reply", content: { comms }, metadata: {}, parentMsgId: msg.requestId })); })
+							.catch(() => undefined);
+					}
+				} catch { /* ignore malformed frames */ }
+			});
+			clientWs.on("close", () => unsubscribe?.());
+			clientWs.on("error", () => unsubscribe?.());
+		});
+		return;
+	}
 	const match = TERMINAL_PATH.exec(url.pathname);
 	if (!match) {
 		socket.destroy();
