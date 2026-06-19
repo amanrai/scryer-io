@@ -989,6 +989,9 @@ textarea {
 	display: flex;
 	flex-direction: column;
 	padding: 6px;
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
 }
 
 .explorer-row {
