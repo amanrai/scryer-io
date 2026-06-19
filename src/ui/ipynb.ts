@@ -39,6 +39,19 @@ function isProgressLikeOutput(output: RichOutput): boolean {
 
 export function appendRichOutput(outputs: RichOutput[], output: RichOutput): RichOutput[] {
 	if (output.kind === "status") return outputs;
+	// `clear_output` wipes the cell's outputs. We clear eagerly; honoring the
+	// `wait` flag (clear only when the next output arrives) is a future refinement.
+	if (output.kind === "clear_output") return [];
+	// `update_display_data` replaces the most recent display sharing its display_id.
+	if (output.kind === "update_display_data") {
+		const updated = [...outputs];
+		const idx = output.displayId
+			? updated.findLastIndex((item) => (item.kind === "display_data" || item.kind === "execute_result") && item.displayId === output.displayId)
+			: -1;
+		const replacement: RichOutput = { kind: "display_data", data: output.data, metadata: output.metadata, displayId: output.displayId };
+		if (idx >= 0) { updated[idx] = replacement; return updated; }
+		return [...updated, replacement];
+	}
 	const next = [...outputs];
 	const last = next[next.length - 1];
 	if (output.kind === "stream") {

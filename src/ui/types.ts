@@ -4,7 +4,9 @@ export type CellKind = "markdown" | "code" | "mermaid";
 
 export type RichOutput =
 	| { kind: "stream"; name: "stdout" | "stderr"; text: string }
-	| { kind: "execute_result" | "display_data"; data: Record<string, unknown>; metadata?: Record<string, unknown> }
+	| { kind: "execute_result" | "display_data"; data: Record<string, unknown>; metadata?: Record<string, unknown>; displayId?: string }
+	| { kind: "update_display_data"; data: Record<string, unknown>; metadata?: Record<string, unknown>; displayId?: string }
+	| { kind: "clear_output"; wait: boolean }
 	| { kind: "error"; ename: string; evalue: string; traceback: string[] }
 	| { kind: "status"; executionState: string }
 	| { kind: "unknown"; messageType: string; content: unknown };

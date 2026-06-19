@@ -1,7 +1,7 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faFile, faFloppyDisk, faFolder, faFolderOpen, faPlay, faRotateRight } from "@fortawesome/free-solid-svg-icons";
 import { CodeEditor } from "./CodeEditor.js";
-import { OutputView } from "./OutputView.js";
+import { OutputBlock } from "./OutputBlock.js";
 import type { FileEntry, RichOutput, ThemeName } from "../types.js";
 
 type FileEditorPaneProps = {
@@ -16,12 +16,14 @@ type FileEditorPaneProps = {
 	fileOutputs: RichOutput[];
 	isExecuting: boolean;
 	theme: ThemeName;
+	providerId?: string;
+	sessionId?: string;
 	onContentChange: (value: string) => void;
 	onSave: () => void;
 	onRun: () => void;
 };
 
-export function FileEditorPane({ fileDir, fileTree, onLoadFiles, onOpenFile, currentFilePath, fileContent, fileLanguage, fileDirty, fileOutputs, isExecuting, theme, onContentChange, onSave, onRun }: FileEditorPaneProps) {
+export function FileEditorPane({ fileDir, fileTree, onLoadFiles, onOpenFile, currentFilePath, fileContent, fileLanguage, fileDirty, fileOutputs, isExecuting, theme, providerId, sessionId, onContentChange, onSave, onRun }: FileEditorPaneProps) {
 	return (
 		<section className="notebook-panel file-editor" aria-label="File editor">
 			<div className="file-editor-tree">
@@ -41,9 +43,9 @@ export function FileEditorPane({ fileDir, fileTree, onLoadFiles, onOpenFile, cur
 					<button className="primary-button" onClick={onRun} disabled={!currentFilePath || isExecuting}><FontAwesomeIcon icon={faPlay} /> Run</button>
 				</div>
 				<div className="file-editor-body">
-					{currentFilePath ? <CodeEditor value={fileContent} language={fileLanguage} theme={theme} onChange={onContentChange} onRun={onRun} onSave={onSave} /> : <div className="empty-output">Select a file from the tree to edit.</div>}
+					{currentFilePath ? <CodeEditor value={fileContent} language={fileLanguage} theme={theme} providerId={providerId} sessionId={sessionId} onChange={onContentChange} onRun={onRun} onSave={onSave} /> : <div className="empty-output">Select a file from the tree to edit.</div>}
 				</div>
-				{fileOutputs.length > 0 && <div className="file-editor-console output-scroll">{fileOutputs.map((output, index) => <OutputView key={index} output={output} />)}</div>}
+				{fileOutputs.length > 0 && <div className="file-editor-console output-scroll">{fileOutputs.map((output, index) => <OutputBlock key={index} output={output} theme={theme} />)}</div>}
 			</div>
 		</section>
 	);

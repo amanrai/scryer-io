@@ -9,6 +9,8 @@ export type PaletteCommand = {
 	label: string;
 	hint?: string;
 	icon: IconDefinition;
+	/** Broad functional group; a divider is drawn whenever the group changes. */
+	group?: string;
 	run: () => void;
 };
 
@@ -19,7 +21,7 @@ type Entry = {
 	label: string;
 	hint?: string;
 	icon: IconDefinition;
-	group: "snippet" | "command";
+	group: string;
 	onSelect: () => void;
 };
 
@@ -85,7 +87,7 @@ export function CommandPalette({
 		if (canSaveCell) list.push({ id: "save-snippet", label: "Save cell as snippet", hint: saveCellHint, icon: faFloppyDisk, group: "snippet", onSelect: () => { setPage("save"); setSaveName(saveCellHint ?? ""); } });
 		list.push({ id: "open-snippets", label: "Snippets", hint: "manage", icon: faLayerGroup, group: "snippet", onSelect: () => { onOpenSnippetsScreen(); onClose(); } });
 		for (const command of commands) {
-			list.push({ id: command.id, label: command.label, hint: command.hint, icon: command.icon, group: "command", onSelect: () => { command.run(); onClose(); } });
+			list.push({ id: command.id, label: command.label, hint: command.hint, icon: command.icon, group: command.group ?? "command", onSelect: () => { command.run(); onClose(); } });
 		}
 		return list.filter((entry) => !q || entry.label.toLowerCase().includes(q) || (entry.hint ?? "").toLowerCase().includes(q));
 	}, [page, q, snippets, commands, canSaveCell, saveCellHint, onInsertSnippet, onOpenSnippetsScreen, onClose]);

@@ -1,6 +1,6 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
-	faArrowDown, faArrowUp, faBolt, faClone, faEraser, faFileCode, faFloppyDisk,
+	faAnglesDown, faArrowDown, faArrowUp, faBolt, faClone, faEraser, faFileCode, faFloppyDisk,
 	faForwardStep, faListUl, faMagnifyingGlass, faPlay, faPlus, faPowerOff,
 	faRotateRight, faStop, faTrash,
 } from "@fortawesome/free-solid-svg-icons";
@@ -17,6 +17,7 @@ type NotebookToolbarProps = {
 	onToggleSidebar: () => void;
 	onToggleFind: () => void;
 	onRestartKernel: () => void;
+	onRunAll: () => void;
 	onExecuteToHere: () => void;
 	onExecuteFromHere: () => void;
 	onClearOutputs: () => void;
@@ -40,6 +41,7 @@ export function NotebookToolbar(props: NotebookToolbarProps) {
 			<button className="ghost-button icon-button" title="Find & replace (Cmd+F)" aria-label="Find and replace" onClick={props.onToggleFind}><FontAwesomeIcon icon={faMagnifyingGlass} /></button>
 			<div className="toolbar-divider" />
 			<button className="ghost-button icon-button" title="Restart kernel" aria-label="Restart kernel" onClick={props.onRestartKernel} disabled={props.isExecuting || !props.hasSession}><FontAwesomeIcon icon={faRotateRight} /></button>
+			<button className="ghost-button icon-button" title="Run all cells" aria-label="Run all cells" onClick={props.onRunAll} disabled={props.isExecuting}><FontAwesomeIcon icon={faAnglesDown} /></button>
 			<button className="ghost-button icon-button" title="Execute all up to here" aria-label="Execute all up to here" onClick={props.onExecuteToHere} disabled={props.isExecuting}><FontAwesomeIcon icon={faBolt} /></button>
 			<button className="ghost-button icon-button" title="Execute all from here" aria-label="Execute all from here" onClick={props.onExecuteFromHere} disabled={props.isExecuting}><FontAwesomeIcon icon={faForwardStep} /></button>
 			<button className="ghost-button icon-button" title="Clear outputs" aria-label="Clear outputs" onClick={props.onClearOutputs} disabled={props.isExecuting}><FontAwesomeIcon icon={faEraser} /></button>

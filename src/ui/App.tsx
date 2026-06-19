@@ -2,17 +2,24 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import "katex/dist/katex.min.css";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
+	faAnglesDown,
+	faAnglesUp,
 	faEraser,
 	faFile,
+	faFileExport,
 	faFloppyDisk,
 	faFolderOpen,
+	faForwardStep,
 	faGear,
 	faLayerGroup,
 	faMagnifyingGlass,
+	faMoon,
 	faPlay,
 	faPlus,
 	faRotateRight,
+	faSun,
 	faTerminal,
+	faWandMagicSparkles,
 	faXmark,
 } from "@fortawesome/free-solid-svg-icons";
 import { type CodeEditorHandle } from "./components/CodeEditor.js";
@@ -29,6 +36,8 @@ import { FileEditorPane } from "./components/FileEditorPane.js";
 import { NotebookToolbar } from "./components/NotebookToolbar.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { listSnippets, createSnippet, type Snippet } from "./snippets.js";
+import { KernelChannel } from "./kernel-channel.js";
+import { notebookToHtml, downloadHtml, printHtml } from "./export.js";
 import { appendRichOutput, cellsFromNotebook, countOccurrences, notebookFromCells, tableOfContents } from "./ipynb.js";
 import { isCommand, nowLabel, type AppMode, type FileEntry, type KernelSpec, type KernelStatus, type LeftPanel, type NotebookCell, type RichOutput, type RuntimeSession, type SavedProvider, type ThemeName, type VariableRow } from "./types.js";
 
@@ -95,6 +104,7 @@ export function App() {
 	const [kernelStatus, setKernelStatus] = useState<KernelStatus>("unknown");
 	const [execCounts, setExecCounts] = useState<Map<string, number>>(new Map());
 	const [runningCellId, setRunningCellId] = useState<string>();
+	const [queuedCellIds, setQueuedCellIds] = useState<Set<string>>(new Set());
 	const [editingCellId, setEditingCellId] = useState<string>();
 
 	const [findOpen, setFindOpen] = useState(false);
@@ -121,6 +131,7 @@ export function App() {
 
 	const cellRefs = useRef(new Map<string, HTMLElement>());
 	const editorRefs = useRef(new Map<string, CodeEditorHandle>());
+	const kernelChannelRef = useRef<KernelChannel | null>(null);
 	const selectedIndex = cells.findIndex((cell) => cell.id === selectedId);
 	const selectedCell = cells[selectedIndex] ?? cells[0];
 	const notebookName = notebookPath ? (notebookPath.split(/[\\/]/).pop() ?? "notebook.ipynb").replace(/\.ipynb$/i, "") || "Untitled" : null;
@@ -201,6 +212,15 @@ export function App() {
 		const timer = setInterval(() => autosaveRef.current(), 30000);
 		return () => clearInterval(timer);
 	}, []);
+
+	// Live session channel: open while a kernel session is active. Subscribers
+	// (widget manager, live-display renderers) attach via kernelChannelRef.
+	useEffect(() => {
+		if (!providerId || !activeSession) { kernelChannelRef.current = null; return; }
+		const channel = new KernelChannel(providerId, activeSession.id);
+		kernelChannelRef.current = channel;
+		return () => { channel.close(); kernelChannelRef.current = null; };
+	}, [providerId, activeSession?.id]);
 
 	// Kernel status polling every 2s
 	useEffect(() => {
@@ -426,6 +446,18 @@ export function App() {
 		URL.revokeObjectURL(url);
 	}
 
+	function exportToHtml() {
+		const title = notebookName ?? "notebook";
+		downloadHtml(notebookToHtml(cells, execCounts, { title, includeOutputs: true }), `${title}.html`);
+		setStatus("Exported notebook as HTML");
+	}
+
+	function exportToPdf() {
+		const title = notebookName ?? "notebook";
+		printHtml(notebookToHtml(cells, execCounts, { title, includeOutputs: true }));
+		setStatus("Opened print view — choose “Save as PDF”");
+	}
+
 	async function switchKernel(name: string) {
 		setKernelName(name);
 		if (!providerId) return;
@@ -474,26 +506,32 @@ export function App() {
 		if (buffer.trim()) handleEvent(JSON.parse(buffer));
 	}
 
-	async function executeCell(cell: NotebookCell) {
+	/** Returns true when the cell ran without producing an error output. */
+	async function executeCell(cell: NotebookCell): Promise<boolean> {
 		if (cell.kind !== "code") {
 			setStatus(`Rendered ${cell.title || "cell"}`);
 			patchCell(cell.id, { outputOpen: true, lastRun: nowLabel(), elapsedMs: 0 });
-			return;
+			return true;
 		}
 		if (!providerId) {
 			setStatus("Connect a Jupyter provider before executing code");
 			patchCell(cell.id, { outputOpen: true, outputs: [{ kind: "stream", name: "stderr", text: "Connect a Jupyter provider before executing code." }] });
-			return;
+			return false;
 		}
 		setStatus(`Running ${cell.title || "cell"}…`);
 		setRunningCellId(cell.id);
+		setQueuedCellIds((current) => { const next = new Set(current); next.delete(cell.id); return next; });
 		markDirty(cell.id);
 		setCells((current) => current.map((item) => item.id === cell.id ? { ...item, outputOpen: true, outputs: [] } : item));
 		const stamp = nowLabel();
+		let errored = false;
 		try {
 			await streamExecute(
 				cell.content,
-				(output) => setCells((current) => current.map((item) => item.id === cell.id ? { ...item, outputs: appendRichOutput(item.outputs ?? [], output) } : item)),
+				(output) => {
+					if (output.kind === "error") errored = true;
+					setCells((current) => current.map((item) => item.id === cell.id ? { ...item, outputs: appendRichOutput(item.outputs ?? [], output) } : item));
+				},
 				(event) => {
 					setActiveSession(event.session);
 					setCells((current) => current.map((item) => item.id === cell.id ? { ...item, lastRun: stamp, elapsedMs: event.elapsedMs, outputOpen: true } : item));
@@ -506,13 +544,61 @@ export function App() {
 		} finally {
 			setRunningCellId(undefined);
 		}
+		return !errored;
 	}
 
-	async function executeCells(targetCells: NotebookCell[]) {
+	async function executeCells(targetCells: NotebookCell[], stopOnError = true) {
 		setIsExecuting(true);
-		try { for (const cell of targetCells) await executeCell(cell); }
+		// Code cells beyond the first are queued so the UI shows what's pending.
+		setQueuedCellIds(new Set(targetCells.slice(1).filter((cell) => cell.kind === "code").map((cell) => cell.id)));
+		try {
+			for (const cell of targetCells) {
+				const ok = await executeCell(cell);
+				if (!ok && stopOnError) {
+					const remaining = targetCells.length - targetCells.indexOf(cell) - 1;
+					if (remaining > 0) setStatus(`Halted on error in ${cell.title || "cell"} — ${remaining} cell${remaining === 1 ? "" : "s"} skipped`);
+					break;
+				}
+			}
+		}
 		catch (err: any) { setStatus(err?.message ?? "Execution failed"); if (selectedCell) patchCell(selectedCell.id, { outputOpen: true, outputs: [{ kind: "stream", name: "stderr", text: err?.message ?? String(err) }] }); }
-		finally { setIsExecuting(false); setRunningCellId(undefined); }
+		finally { setIsExecuting(false); setRunningCellId(undefined); setQueuedCellIds(new Set()); }
+	}
+
+	async function formatSource(code: string): Promise<string | null> {
+		try {
+			const res = await fetch("/api/format", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+			const json = await res.json();
+			if (!res.ok) { setStatus(json.error ?? "Format failed"); return null; }
+			if (!json.available) { setStatus("ruff is not installed on the server"); return null; }
+			return json.formatted as string;
+		} catch (err: any) { setStatus(err?.message ?? "Format failed"); return null; }
+	}
+
+	async function formatCell() {
+		if (!selectedCell || selectedCell.kind !== "code") { setStatus("Select a code cell to format"); return; }
+		const formatted = await formatSource(selectedCell.content);
+		if (formatted != null && formatted !== selectedCell.content) { patchCell(selectedCell.id, { content: formatted }); setStatus("Formatted cell"); }
+		else if (formatted != null) setStatus("Cell already formatted");
+	}
+
+	async function formatNotebook() {
+		let changed = 0;
+		for (const cell of cells) {
+			if (cell.kind !== "code" || !cell.content.trim()) continue;
+			const formatted = await formatSource(cell.content);
+			if (formatted != null && formatted !== cell.content) { patchCell(cell.id, { content: formatted }); changed += 1; }
+		}
+		setStatus(`Formatted ${changed} cell${changed === 1 ? "" : "s"}`);
+	}
+
+	function runAll() { executeCells(cells); }
+	function runAllAbove() { if (selectedIndex > 0) executeCells(cells.slice(0, selectedIndex)); }
+	function runAllBelow() { if (selectedIndex >= 0) executeCells(cells.slice(selectedIndex)); }
+
+	async function restartAndRunAll() {
+		await restartKernelAndClearOutputs();
+		if (providerId && activeSession) executeCells(cells);
 	}
 
 	function runSelection() {
@@ -569,7 +655,7 @@ export function App() {
 				body: JSON.stringify({ sessionId: activeSession.id }),
 			});
 			setStatus("Kernel interrupted");
-		} finally { setIsExecuting(false); }
+		} finally { setIsExecuting(false); setQueuedCellIds(new Set()); }
 	}
 
 	async function loadVariables() {
@@ -955,14 +1041,29 @@ export function App() {
 	const sidebarOpen = leftPanel !== null && appMode === "notebook";
 
 	const paletteCommands: PaletteCommand[] = [
-		{ id: "save-notebook", label: "Save notebook", hint: "⌘S", icon: faFloppyDisk, run: saveNotebook },
-		{ id: "new-notebook", label: "New notebook", icon: faPlus, run: newNotebook },
-		{ id: "run-selection", label: "Run selected cell", hint: "⌘↵", icon: faPlay, run: runSelection },
-		{ id: "restart-kernel", label: "Restart kernel", icon: faRotateRight, run: restartKernel },
-		{ id: "clear-outputs", label: "Clear all outputs", icon: faEraser, run: clearOutputs },
-		{ id: "find", label: "Find & replace", hint: "⌘F", icon: faMagnifyingGlass, run: () => setFindOpen(true) },
-		{ id: "theme", label: `Switch to ${themeName === "dark" ? "light" : "dark"} theme`, icon: faGear, run: () => setThemeName(themeName === "dark" ? "light" : "dark") },
-		{ id: "settings", label: "Open settings", icon: faGear, run: () => setSettingsOpen(true) },
+		// Notebook / file
+		{ id: "save-notebook", label: "Save notebook", hint: "⌘S", icon: faFloppyDisk, group: "notebook", run: saveNotebook },
+		{ id: "new-notebook", label: "New notebook", icon: faPlus, group: "notebook", run: newNotebook },
+		{ id: "export-html", label: "Export as HTML", icon: faFileExport, group: "notebook", run: exportToHtml },
+		{ id: "export-pdf", label: "Export as PDF", icon: faFileExport, group: "notebook", run: exportToPdf },
+		{ id: "export-py", label: "Export as Python (.py)", icon: faFileExport, group: "notebook", run: exportToPy },
+		// Execution
+		{ id: "run-selection", label: "Run selected cell", hint: "⌘↵", icon: faPlay, group: "run", run: runSelection },
+		{ id: "run-all", label: "Run all cells", icon: faForwardStep, group: "run", run: runAll },
+		{ id: "run-all-above", label: "Run all cells above", icon: faAnglesUp, group: "run", run: runAllAbove },
+		{ id: "run-all-below", label: "Run all cells below", icon: faAnglesDown, group: "run", run: runAllBelow },
+		{ id: "restart-run-all", label: "Restart kernel and run all", icon: faForwardStep, group: "run", run: restartAndRunAll },
+		{ id: "restart-kernel", label: "Restart kernel", icon: faRotateRight, group: "run", run: restartKernel },
+		{ id: "restart-clear", label: "Restart kernel and clear outputs", hint: "⇧⌘R", icon: faRotateRight, group: "run", run: restartKernelAndClearOutputs },
+		{ id: "clear-outputs", label: "Clear all outputs", icon: faEraser, group: "run", run: clearOutputs },
+		// Edit
+		{ id: "format-cell", label: "Format cell", icon: faWandMagicSparkles, group: "edit", run: formatCell },
+		{ id: "format-notebook", label: "Format notebook", icon: faWandMagicSparkles, group: "edit", run: formatNotebook },
+		// View / appearance
+		{ id: "find", label: "Find & replace", hint: "⌘F", icon: faMagnifyingGlass, group: "view", run: () => setFindOpen(true) },
+		{ id: "theme-light", label: "Light theme", hint: themeName === "light" ? "current" : undefined, icon: faSun, group: "view", run: () => setThemeName("light") },
+		{ id: "theme-dark", label: "Dark theme", hint: themeName === "dark" ? "current" : undefined, icon: faMoon, group: "view", run: () => setThemeName("dark") },
+		{ id: "settings", label: "Open settings", icon: faGear, group: "view", run: () => setSettingsOpen(true) },
 	];
 
 	return (
@@ -996,6 +1097,7 @@ export function App() {
 					onToggleSidebar={cycleLeftPanel}
 					onToggleFind={() => setFindOpen((open) => !open)}
 					onRestartKernel={restartKernel}
+					onRunAll={runAll}
 					onExecuteToHere={() => executeCells(cells.slice(0, selectedIndex + 1))}
 					onExecuteFromHere={() => executeCells(cells.slice(selectedIndex))}
 					onClearOutputs={clearOutputs}
@@ -1097,9 +1199,12 @@ export function App() {
 									cell={cell}
 									index={index}
 									theme={themeName}
+									providerId={providerId}
+									sessionId={activeSession?.id}
 									selected={cell.id === selectedId}
 									multiSelected={selectedIds.has(cell.id)}
 									running={runningCellId === cell.id}
+									queued={queuedCellIds.has(cell.id)}
 									editing={editingCellId === cell.id}
 									dragOver={dragOverId === cell.id && dragSrcId !== cell.id}
 									dirty={dirtyCellIds.has(cell.id)}
@@ -1155,6 +1260,8 @@ export function App() {
 						fileOutputs={fileOutputs}
 						isExecuting={isExecuting}
 						theme={themeName}
+						providerId={providerId}
+						sessionId={activeSession?.id}
 						onContentChange={(value) => { setFileContent(value); setFileDirty(true); }}
 						onSave={saveFile}
 						onRun={runFile}
